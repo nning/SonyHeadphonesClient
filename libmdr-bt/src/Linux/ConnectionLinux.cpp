@@ -175,6 +175,18 @@ struct MDRConnectionLinux
     static MDRResult GetDevicesList(void* user, MDRDeviceInfo** ppList, int* pCount) noexcept
     {
         auto* ptr = static_cast<MDRConnectionLinux*>(user);
+        *ppList = nullptr;
+        *pCount = 0;
+        // The system bus may have been unavailable at construction (e.g. no
+        // D-Bus in a container, bluetoothd not started yet); libdbus aborts
+        // the process when handed a NULL connection, so retry or bail.
+        if (!ptr->dbusConn)
+            ptr->dbusConn = dbus_open_system_bus();
+        if (!ptr->dbusConn)
+        {
+            ptr->lastError = "Could not connect to the D-Bus system bus";
+            return MDR_RESULT_ERROR_NO_CONNECTION;
+        }
         auto paths = dbus_list_adapters(ptr->dbusConn);
         *ppList = mdr::MDRAllocator<MDRDeviceInfo>().allocate(paths.size());
         *pCount = static_cast<int>(paths.size());
@@ -182,9 +194,12 @@ struct MDRConnectionLinux
         {
             mdr::String name = dbus_get_property(ptr->dbusConn, paths[i].c_str(), "Name");
             mdr::String address = dbus_get_property(ptr->dbusConn, paths[i].c_str(), "Address");
-            // mdr::String is always null-terminated
-            strncpy((*ppList)[i].szDeviceName, name.c_str(), name.size() + 1);
-            strncpy((*ppList)[i].szDeviceMacAddress, address.c_str(), address.size() + 1);
+            // Bluetooth names can be up to 248 bytes, longer than szDeviceName.
+            MDRDeviceInfo& info = (*ppList)[i];
+            strncpy(info.szDeviceName, name.c_str(), sizeof(info.szDeviceName) - 1);
+            info.szDeviceName[sizeof(info.szDeviceName) - 1] = '\0';
+            strncpy(info.szDeviceMacAddress, address.c_str(), sizeof(info.szDeviceMacAddress) - 1);
+            info.szDeviceMacAddress[sizeof(info.szDeviceMacAddress) - 1] = '\0';
         }
         return MDR_RESULT_OK;
     }
