@@ -274,6 +274,7 @@ typedef uint32_t MDRAssignableAction;
 #define MDR_ASSIGNABLE_TENCENT_XIAOWEI ((MDRAssignableAction)8u)
 #define MDR_ASSIGNABLE_MICROSOFT_CORTANA ((MDRAssignableAction)9u)
 #define MDR_ASSIGNABLE_QUICK_ACCESS ((MDRAssignableAction)10u)
+#define MDR_ASSIGNABLE_VOLUME_CONTROL ((MDRAssignableAction)11u)
 
 typedef uint32_t MDRWearingPowerMode;
 #define MDR_WEARING_POWER_UNAVAILABLE ((MDRWearingPowerMode)0u)
