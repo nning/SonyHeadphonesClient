@@ -220,7 +220,7 @@ namespace mdr
         case SAFE_LISTENING_TWS_2:
         {
             Deserialize(SafeListeningNotifyParamSL, res, cmd);
-            self->mDetailsV2.mSafeListeningPreviewMode.overwrite(res.previewMode == OnOffSettingValue::ON);
+            self->mDetailsV2.mSafeListeningPreviewMode.overwrite(res.safeListeningMode == OnOffSettingValue::ON);
             return MDR_EVENT_SAFE_LISTENING_CHANGED;
         }
         default:
