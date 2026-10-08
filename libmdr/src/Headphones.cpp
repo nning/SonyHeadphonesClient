@@ -2072,7 +2072,11 @@ MDRResult mdrHeadphonesSetPairedDevice(
     {
     case MDR_PAIRED_DEVICE_CONNECT: h->mDetailsV2.mPairedDeviceConnectMac.stage(value); break;
     case MDR_PAIRED_DEVICE_DISCONNECT: h->mDetailsV2.mPairedDeviceDisconnectMac.stage(value); break;
-    case MDR_PAIRED_DEVICE_SELECT_PLAYBACK: h->mDetailsV2.mMultipointDeviceMac.stage(value); break;
+    case MDR_PAIRED_DEVICE_SELECT_PLAYBACK:
+        // The device answers with a fresh result; do not report an old refusal.
+        h->mDetailsV2.mSourceSwitchControlResult = mdr::v2::t2::SourceSwitchControlResult::SUCCESS;
+        h->mDetailsV2.mMultipointDeviceMac.stage(value);
+        break;
     case MDR_PAIRED_DEVICE_UNPAIR: h->mDetailsV2.mPairedDeviceUnpairMac.stage(value); break;
     default: return MDR_RESULT_ERROR_INVALID_ARGUMENT;
     }
