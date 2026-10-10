@@ -53,18 +53,14 @@ target_sources(
         PRIVATE
         SDLMain.cpp
         Client.cpp
-        PacketObserver.cpp
-        PayloadRecorder.cpp
+        Recorder.cpp
         Fonts/PlexSansIcon.c
 )
+target_link_libraries(SonyHeadphonesClient PRIVATE Client_I18N)
 
 set(SDL_STATIC ON CACHE BOOL "" FORCE)
 set(SDL_SHARED OFF CACHE BOOL "" FORCE)
 set(SDL_CAMERA OFF CACHE BOOL "" FORCE)
-set(SDL_GPU OFF CACHE BOOL "" FORCE)
-set(SDL_RENDER_GPU OFF CACHE BOOL "" FORCE)
-set(SDL_RENDER_VULKAN OFF CACHE BOOL "" FORCE)
-set(SDL_VULKAN OFF CACHE BOOL "" FORCE)
 set(SDL_DIALOG ON CACHE BOOL "" FORCE)
 set(SDL_TEST_LIBRARY OFF CACHE BOOL "" FORCE)
 set(SDL_EXAMPLES OFF CACHE BOOL "" FORCE)
@@ -75,7 +71,7 @@ set(SDL_SENSOR OFF CACHE BOOL "" FORCE)
 set(SDL_AUDIO OFF CACHE BOOL "" FORCE)
 set(SDL_POWER OFF CACHE BOOL "" FORCE)
 set(SDL_HIDAPI OFF CACHE BOOL "" FORCE)
-set(SDL_LOCALE OFF CACHE BOOL "" FORCE)
+set(SDL_LOCALE ON CACHE BOOL "" FORCE)
 set(SDL_MISC OFF CACHE BOOL "" FORCE)
 
 FetchContent_MakeAvailable(imgui)

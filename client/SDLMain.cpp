@@ -1,4 +1,5 @@
 // SDL_Renderer backend from https://github.com/ocornut/imgui/blob/master/examples/example_sdl3_sdlrenderer3
+#include <climits>
 #include <cstdio>
 #include <cstring>
 #ifdef _WIN32
@@ -7,16 +8,18 @@
 #include <windows.h>
 #endif
 
-#include <mdr/Protocol.hpp>
+#include <SDL3/SDL.h>
+#include <SDL3/SDL_main.h>
+#include <SDL3/SDL_render.h>
 #include <imgui.h>
 #include <imgui_impl_sdl3.h>
 #include <imgui_impl_sdlrenderer3.h>
-#include <SDL3/SDL.h>
-#include <SDL3/SDL_render.h>
-#include <SDL3/SDL_main.h>
+#include <mdr/Protocol.hpp>
 
+#include "Recorder.hpp"
 #include "Platform/Platform.hpp"
-#include "PayloadRecorder.hpp"
+#include "I18N/Strings.hpp"
+
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
 #endif
@@ -33,10 +36,37 @@ extern void clientSetPauseMediaOnRemove(bool enabled);
 extern void clientEnterDebuggerReplayMode();
 #endif
 
+
 bool gShouldClose = false;
 
 SDL_Window* gWindow = nullptr;
 SDL_Renderer* gRenderer = nullptr;
+static AppLocale gAppLocale = AppLocale::DEFAULT;
+static bool gPlatformFontLoaded = false;
+static int gFontFallbackIndex = static_cast<int>(AppLocale::SIMPLIFIED_CHINESE);
+static char* gFontFallbackData = nullptr;
+static int gFontFallbackSize{};
+static const char* gFontFallbackPath = nullptr;
+static constexpr ImWchar gIconGlyphRanges[] = {0xf000, 0xf2ff, 0};
+
+static void DestroyFontFallback()
+{
+    clientPlatformMemoryUnmapFile(gFontFallbackData, static_cast<size_t>(gFontFallbackSize));
+    gFontFallbackData = nullptr;
+    gFontFallbackSize = 0;
+    gFontFallbackPath = nullptr;
+}
+
+AppLocale clientGetAppLocale()
+{
+    return gAppLocale;
+}
+
+void clientSetAppLocale(AppLocale locale)
+{
+    gAppLocale = locale;
+    gPlatformFontLoaded = false;
+}
 
 void mainLoop()
 {
@@ -60,8 +90,7 @@ void mainLoop()
             }
             else
             {
-                SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Unable to replay %s: %s",
-                             event.drop.data, SDL_GetError());
+                SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Unable to replay %s: %s", event.drop.data, SDL_GetError());
             }
         }
 #endif
@@ -73,28 +102,59 @@ void mainLoop()
     }
     // Start the Dear ImGui frame
     {
-        // Platform font loading - if available
-        // This is only done once per session. See @ref clientPlatformLocateFontBinary for more info.
-        static int platformFontSize = 0;
-        if (!platformFontSize)
+        while (!gPlatformFontLoaded)
         {
-            const char* fontData = nullptr;
-            platformFontSize = clientPlatformLocateFontBinary(&fontData);
-            if (platformFontSize)
+            const bool useFontFallback = gFontFallbackData && gFontFallbackSize > 0;
+            const AppLocale locale = !useFontFallback && gAppLocale == AppLocale::DEFAULT ?
+                static_cast<AppLocale>(gFontFallbackIndex) : gAppLocale;
+            const char* fontData = gFontFallbackData;
+            int faceIndex{};
+            const int fontSize = useFontFallback ? gFontFallbackSize :
+                clientPlatformLocateFontBinary(locale, &fontData, &faceIndex);
+            if (fontSize < 0)
+                break;
+            if (fontSize > 0 && fontData && faceIndex >= 0)
             {
-                SDL_Log("Loading platform font of size %d bytes", platformFontSize);
-                ImFontConfig merge_config{};
-                merge_config.MergeMode = true;
-                // XXX: PlexSansIcon covered latin-1 pages. New ones won't overwrite them.
-                // External fonts are meant to cover missing glyphs e.g. CJK ones anyway - so this is fine.
-                io.Fonts->AddFontFromMemoryTTF((void*)fontData, platformFontSize, 15.0f, &merge_config);
+                MDR_LOG("Loading {} font: locale {}, {} bytes, face {}",
+                        useFontFallback ? "file" : "platform", locale, fontSize, faceIndex);
+                ImFontConfig config{};
+                config.FontDataOwnedByAtlas = false;
+                config.FontNo = static_cast<ImU32>(faceIndex);
+                config.GlyphExcludeRanges = gIconGlyphRanges;
+                if (ImFont* font = io.Fonts->AddFontFromMemoryTTF(
+                        const_cast<char*>(fontData), fontSize, 15.0f, &config))
+                {
+                    ImFontConfig iconConfig{};
+                    iconConfig.MergeMode = true;
+                    iconConfig.DstFont = font;
+                    if (io.Fonts->AddFontFromMemoryCompressedBase85TTF(
+    kEmbedFontPlexSansIcon, 15.0f, &iconConfig, gIconGlyphRanges))
+                    {
+                        io.FontDefault = font;
+                        gPlatformFontLoaded = true;
+                        MDR_LOG("Loaded {} font: locale {}, face {}",
+        useFontFallback ? "file" : "platform", locale, faceIndex);
+                        break;
+                    }
+                }
+                if (useFontFallback)
+                {
+                    MDR_LOG("Unable to load font file {}.", gFontFallbackPath);
+                }
+                else
+                {
+                    MDR_LOG("Unable to load platform font: locale {}, face {}", locale, faceIndex);
+                }
             }
+            if (useFontFallback || gAppLocale != AppLocale::DEFAULT ||
+                ++gFontFallbackIndex >= static_cast<int>(AppLocale::NUM_LOCALES))
+                gPlatformFontLoaded = true;
         }
         // New frame
         ImGui_ImplSDLRenderer3_NewFrame();
         ImGui_ImplSDL3_NewFrame();
         ImGui::NewFrame();
-    }    
+    }
     gShouldClose |= clientShouldExit();
     // Rendering
     {
@@ -107,7 +167,17 @@ void mainLoop()
     }
 #ifdef __EMSCRIPTEN__
     if (gShouldClose)
+    {
         emscripten_cancel_main_loop();
+        ImGui_ImplSDLRenderer3_Shutdown();
+        ImGui_ImplSDL3_Shutdown();
+        ImGui::DestroyContext();
+        DestroyFontFallback();
+        SDL_DestroyRenderer(gRenderer);
+        SDL_DestroyWindow(gWindow);
+        SDL_Quit();
+        clientPlatformDestroy();
+    }
 #endif
 }
 
@@ -117,40 +187,100 @@ void mainLoop()
 namespace
 {
 #ifdef _WIN32
-    void OpenConsole()
+    void OpenConsole(bool allocateIfUnavailable)
     {
-        if (!AllocConsole() && GetLastError() != ERROR_ACCESS_DENIED)
+        const HANDLE standardError = GetStdHandle(STD_ERROR_HANDLE);
+        if (standardError && standardError != INVALID_HANDLE_VALUE)
+            return;
+
+        bool attached = AttachConsole(ATTACH_PARENT_PROCESS) != FALSE;
+        const DWORD attachError = attached ? ERROR_SUCCESS : GetLastError();
+        if (!attached && attachError == ERROR_ACCESS_DENIED)
+            attached = true;
+
+        bool allocated = false;
+        if (!attached && allocateIfUnavailable)
+        {
+            allocated = AllocConsole() != FALSE;
+            attached = allocated;
+        }
+        if (!attached)
             return;
 
         std::freopen("CONOUT$", "w", stdout);
         std::freopen("CONOUT$", "w", stderr);
         std::freopen("CONIN$", "r", stdin);
-        SetConsoleOutputCP(CP_UTF8);
+        if (allocated)
+            SetConsoleOutputCP(CP_UTF8);
     }
 #endif
+
+    AppLocale GetPreferredAppLocale()
+    {
+        AppLocale result = AppLocale::DEFAULT;
+        SDL_Locale** locales = SDL_GetPreferredLocales(nullptr);
+        for (SDL_Locale** current = locales;
+             current && *current && result == AppLocale::DEFAULT; ++current)
+        {
+            const auto& locale = **current;
+            if (!locale.language)
+                continue;
+            if (SDL_strcasecmp(locale.language, "zh") == 0)
+            {
+                const char* country = locale.country;
+                const bool traditional = country &&
+                    (SDL_strcasecmp(country, "Hant") == 0 || SDL_strcasecmp(country, "TW") == 0 ||
+                     SDL_strcasecmp(country, "HK") == 0 || SDL_strcasecmp(country, "MO") == 0);
+                result = traditional ? AppLocale::TRADITIONAL_CHINESE : AppLocale::SIMPLIFIED_CHINESE;
+            }
+            else if (SDL_strcasecmp(locale.language, "ja") == 0)
+                result = AppLocale::JAPANESE;
+            else if (SDL_strcasecmp(locale.language, "ko") == 0)
+                result = AppLocale::KOREAN;
+        }
+        SDL_free(locales);
+        return result;
+    }
 
     struct ClientOptions
     {
         const char* recordDirectory{};
         const char* replayPath{};
+        const char* fontPath{};
         bool showHelp{};
         bool pauseMediaOnRemove{};
+        AppLocale locale{AppLocale::DEFAULT};
+        bool localeSpecified{};
     };
 
     void PrintUsage()
     {
-        MDR_LOG(
-            "Usage: SonyHeadphonesClient [-con] [--pause-media-on-remove] [--record <capture-folder>]\n"
-            "       SonyHeadphonesClient [-con] [--replay <packet-file-or-folder>]\n"
-            "\n"
-            "-con opens a diagnostic console on Windows.\n"
-            "--pause-media-on-remove pauses this computer's media players when the headphones\n"
-            "come off and resumes them when they go back on. Only acts while another device is\n"
-            "connected to the headphones (multipoint), which is when their own auto pause goes\n"
-            "to that device instead of here (wearing sensor required; Linux only for now).\n"
-            "Can also be toggled in the Power section while connected.\n"
-            "Packet replay requires a client build with the debugger enabled."
-        );
+        std::fprintf(stderr,
+                     "Usage: SonyHeadphonesClient\n");
+        std::fprintf(stderr,
+                     "    [--record <capture-folder>] Records device packets automatically to folder\n");
+        std::fprintf(stderr,
+                     "    [--locale %s] Override application locale selected from the system\n",
+                     i18n::kLocaleOptionString);
+        std::fprintf(stderr,
+                     "    [--font <font-file>] Load an external font without changing application locale\n");
+        std::fprintf(stderr,
+                     "    [--renderer <renderer>] Specify SDL_HINT_RENDER_DRIVER hint to use\n");
+#ifdef MDR_CLIENT_DEBUGGER
+        std::fprintf(stderr,
+                     "    [--replay <packet-file-or-folder>] Replays devices packets from folder\n");
+#endif
+        // Windows specific
+#ifdef _WIN32
+        std::fprintf(stderr,
+                     "    [--con] Opens console for diagnostic logs\n");
+#endif
+        // Linux specific (DBus)
+#ifdef __linux__
+        std::fprintf(stderr,
+                     "    [--pause-media-on-remove] Auto-pause system media playback when device "
+                     "is removed when unsupported by OS otherwise.\n");
+#endif
     }
 
     bool ParseOptions(int argc, char** argv, ClientOptions& options)
@@ -163,10 +293,10 @@ namespace
                 options.showHelp = true;
                 continue;
             }
-            if (std::strcmp(argument, "-con") == 0)
+            if (std::strcmp(argument, "--con") == 0 || std::strcmp(argument, "-con") == 0)
             {
 #ifdef _WIN32
-                OpenConsole();
+                OpenConsole(true);
 #endif
                 continue;
             }
@@ -176,9 +306,43 @@ namespace
                 continue;
             }
 
+            if (std::strcmp(argument, "--renderer") == 0)
+            {
+                if (++index >= argc || argv[index][0] == '\0' || argv[index][0] == '-')
+                {
+                    MDR_LOG("Missing renderer after {}.", argument);
+                    return false;
+                }
+                if (!SDL_SetHint(SDL_HINT_RENDER_DRIVER, argv[index]))
+                {
+                    MDR_LOG("Unable to set SDL_HINT_RENDER_DRIVER to {}.", argv[index]);
+                    return false;
+                }
+                continue;
+            }
+
+            if (std::strcmp(argument, "--locale") == 0)
+            {
+                if (++index >= argc)
+                {
+                    MDR_LOG("Missing locale after {}.", argument);
+                    return false;
+                }
+                const auto locale = i18n::ParseLocale(argv[index]);
+                if (!locale)
+                {
+                    MDR_LOG("Invalid locale: {}. Expected default, sc, tc, jp, or kr.", argv[index]);
+                    return false;
+                }
+                options.locale = *locale;
+                options.localeSpecified = true;
+                continue;
+            }
+
             const bool record = std::strcmp(argument, "--record") == 0;
             const bool replay = std::strcmp(argument, "--replay") == 0;
-            if (record || replay)
+            const bool font = std::strcmp(argument, "--font") == 0;
+            if (record || replay || font)
             {
                 if (index + 1 >= argc)
                 {
@@ -186,7 +350,8 @@ namespace
                     return false;
                 }
                 const char* path = argv[++index];
-                const char*& destination = record ? options.recordDirectory : options.replayPath;
+                const char*& destination = font ? options.fontPath :
+                    (record ? options.recordDirectory : options.replayPath);
                 if (destination)
                 {
                     MDR_LOG("{} may only be specified once.", argument);
@@ -207,16 +372,22 @@ namespace
         }
         return true;
     }
-}
+} // namespace
 
 int main(int argc, char** argv)
 {
+#ifdef _WIN32
+    OpenConsole(false);
+#endif
     ClientOptions options;
     if (!ParseOptions(argc, argv, options))
     {
         PrintUsage();
         return 2;
     }
+    gAppLocale = options.locale;
+    gPlatformFontLoaded = false;
+    gFontFallbackIndex = static_cast<int>(AppLocale::SIMPLIFIED_CHINESE);
     clientSetPauseMediaOnRemove(options.pauseMediaOnRemove);
     if (options.showHelp)
     {
@@ -236,6 +407,9 @@ int main(int argc, char** argv)
         MDR_LOG("SDL_Init Error: {}", SDL_GetError());
         return 1;
     }
+    if (!options.localeSpecified)
+        gAppLocale = GetPreferredAppLocale();
+    MDR_LOG("Selected locale: {}", gAppLocale);
     if (options.recordDirectory)
     {
         if (!clientPayloadRecorderConfigure(options.recordDirectory))
@@ -244,7 +418,9 @@ int main(int argc, char** argv)
             SDL_Quit();
             return 1;
         }
-        MDR_LOG("Recording MDR packets to {}. Existing mdr-packet-*.bin files were cleared. Captures may contain device addresses, names, and playback metadata.", options.recordDirectory);
+        MDR_LOG("Recording MDR packets to {}. Existing mdr-packet-*.bin files were cleared. Captures may contain "
+                "device addresses, names, and playback metadata.",
+                options.recordDirectory);
     }
 #ifdef MDR_CLIENT_DEBUGGER
     if (options.replayPath)
@@ -263,11 +439,9 @@ int main(int argc, char** argv)
     // https://github.com/libsdl-org/SDL/blob/main/docs/README-highdpi.md#numeric-example
     // This should only be effective (!=1.0f) on Windows and X11 platforms
     float displayScale = SDL_GetDisplayContentScale(SDL_GetPrimaryDisplay());
-    gWindow = SDL_CreateWindow(
-        "SonyHeadphonesClient",
-        CLIENT_WINDOW_WIDTH * displayScale, CLIENT_WINDOW_HEIGHT * displayScale,
-        SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY
-    );
+    gWindow =
+        SDL_CreateWindow("SonyHeadphonesClient", CLIENT_WINDOW_WIDTH * displayScale,
+                         CLIENT_WINDOW_HEIGHT * displayScale, SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
     if (!gWindow)
     {
         SDL_Log("Error: SDL_CreateWindow(): %s\n", SDL_GetError());
@@ -277,11 +451,33 @@ int main(int argc, char** argv)
     clientDebuggerSetWindow(gWindow);
 #endif
     gRenderer = SDL_CreateRenderer(gWindow, nullptr);
-    SDL_SetRenderVSync(gRenderer, 1);
     if (!gRenderer)
     {
-        SDL_Log("Error: SDL_CreateRenderer()\n");
+        SDL_Log("Error: SDL_CreateRenderer(): %s\n", SDL_GetError());
         return 1;
+    }
+    SDL_Log("Using SDL_Renderer: %s", SDL_GetRendererName(gRenderer));
+    SDL_SetRenderVSync(gRenderer, 1);
+    if (options.fontPath)
+    {
+        void* fontData{};
+        size_t fontSize{};
+        const int result = clientPlatformMemoryMapFile(options.fontPath, &fontData, &fontSize);
+        if (result != MDR_RESULT_OK || fontSize > static_cast<size_t>(INT_MAX))
+        {
+            if (result != MDR_RESULT_OK)
+                MDR_LOG("Unable to map font file {}: error {}", options.fontPath, result)
+            else
+                MDR_LOG("Invalid font file size for {}: {} bytes", options.fontPath, fontSize)
+            clientPlatformMemoryUnmapFile(fontData, fontSize);
+            SDL_DestroyRenderer(gRenderer);
+            SDL_DestroyWindow(gWindow);
+            SDL_Quit();
+            return 1;
+        }
+        gFontFallbackData = static_cast<char*>(fontData);
+        gFontFallbackSize = static_cast<int>(fontSize);
+        gFontFallbackPath = options.fontPath;
     }
     // Setup Dear ImGui context
     {
@@ -332,6 +528,7 @@ int main(int argc, char** argv)
         ImGui_ImplSDLRenderer3_Shutdown();
         ImGui_ImplSDL3_Shutdown();
         ImGui::DestroyContext();
+        DestroyFontFallback();
 
         SDL_DestroyRenderer(gRenderer);
         SDL_DestroyWindow(gWindow);

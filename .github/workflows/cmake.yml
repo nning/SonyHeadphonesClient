@@ -31,13 +31,13 @@ jobs:
             arch: x64
             binary_path: build/client/SonyHeadphonesClient
             artifact_name: "SonyHeadphonesClient-linux-x64"
-            script: "sudo apt-get update && sudo apt-get install -y libbluetooth-dev libdbus-1-dev libwayland-dev libxkbcommon-dev wayland-protocols extra-cmake-modules xorg-dev libcurl4-openssl-dev"
+            script: "sudo apt-get update && sudo apt-get install -y libbluetooth-dev libdbus-1-dev libfontconfig1-dev libwayland-dev libxkbcommon-dev wayland-protocols extra-cmake-modules xorg-dev libcurl4-openssl-dev"
             gcc: 14
           - os: ubuntu-24.04-arm
             arch: arm64
             binary_path: build/client/SonyHeadphonesClient
             artifact_name: "SonyHeadphonesClient-linux-arm64"
-            script: "sudo apt-get update && sudo apt-get install -y libbluetooth-dev libdbus-1-dev libwayland-dev libxkbcommon-dev wayland-protocols extra-cmake-modules xorg-dev libcurl4-openssl-dev"
+            script: "sudo apt-get update && sudo apt-get install -y libbluetooth-dev libdbus-1-dev libfontconfig1-dev libwayland-dev libxkbcommon-dev wayland-protocols extra-cmake-modules xorg-dev libcurl4-openssl-dev"
             gcc: 14
           - os: macos-latest
             arch: universal
@@ -63,7 +63,7 @@ jobs:
     - name: Configure CMake (Windows)
       working-directory: ${{github.workspace}}/build    
       if: runner.os == 'Windows'
-      run: cmake .. -DCMAKE_BUILD_TYPE=$BUILD_TYPE -DMDR_ENABLE_CODEGEN=OFF -DMDR_CLIENT_DEBUGGER=ON -A ${{ matrix.arch }}
+      run: cmake .. -DCMAKE_BUILD_TYPE=$BUILD_TYPE -DMDR_ENABLE_CODEGEN=OFF -DMDR_CLIENT_DEBUGGER=ON -DMDR_ENABLE_LOG=ON -A ${{ matrix.arch }}
 
     - name: Configure CMake (Linux)
       env:
@@ -71,12 +71,12 @@ jobs:
         CXX: g++-${{ matrix.gcc }}
       working-directory: ${{github.workspace}}/build
       if: runner.os == 'Linux'
-      run: cmake .. -DCMAKE_BUILD_TYPE=$BUILD_TYPE -DMDR_ENABLE_CODEGEN=OFF -DMDR_CLIENT_DEBUGGER=ON
+      run: cmake .. -DCMAKE_BUILD_TYPE=$BUILD_TYPE -DMDR_ENABLE_CODEGEN=OFF -DMDR_CLIENT_DEBUGGER=ON -DMDR_ENABLE_LOG=ON
 
     - name: Configure CMake (macOS)
       working-directory: ${{github.workspace}}/build
       if: runner.os == 'macOS'
-      run: cmake .. -DCMAKE_BUILD_TYPE=$BUILD_TYPE -DMDR_ENABLE_CODEGEN=OFF -DMDR_CLIENT_DEBUGGER=ON -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" -DCMAKE_OSX_DEPLOYMENT_TARGET=12.0
+      run: cmake .. -DCMAKE_BUILD_TYPE=$BUILD_TYPE -DMDR_ENABLE_CODEGEN=OFF -DMDR_CLIENT_DEBUGGER=ON -DMDR_ENABLE_LOG=ON -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" -DCMAKE_OSX_DEPLOYMENT_TARGET=12.0
     
     - name: Build
       working-directory: ${{github.workspace}}/build
