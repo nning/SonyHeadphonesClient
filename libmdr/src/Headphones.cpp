@@ -1100,6 +1100,7 @@ namespace
         {
         case PLAYBACK_CONTROL: return MDR_ASSIGNABLE_PLAYBACK;
         case AMBIENT_SOUND_CONTROL: return MDR_ASSIGNABLE_NOISE_CONTROL;
+        case VOLUME_CONTROL: return MDR_ASSIGNABLE_VOLUME;
         case VOICE_RECOGNITION: return MDR_ASSIGNABLE_VOICE_RECOGNITION;
         case GOOGLE_ASSISTANT: return MDR_ASSIGNABLE_GOOGLE_ASSISTANT;
         case AMAZON_ALEXA: return MDR_ASSIGNABLE_AMAZON_ALEXA;
@@ -1116,6 +1117,7 @@ namespace
         case MDR_ASSIGNABLE_NONE: out = NO_FUNCTION; return true;
         case MDR_ASSIGNABLE_PLAYBACK: out = PLAYBACK_CONTROL; return true;
         case MDR_ASSIGNABLE_NOISE_CONTROL: out = AMBIENT_SOUND_CONTROL; return true;
+        case MDR_ASSIGNABLE_VOLUME: out = VOLUME_CONTROL; return true;
         case MDR_ASSIGNABLE_VOICE_RECOGNITION: out = VOICE_RECOGNITION; return true;
         case MDR_ASSIGNABLE_GOOGLE_ASSISTANT: out = GOOGLE_ASSISTANT; return true;
         case MDR_ASSIGNABLE_AMAZON_ALEXA: out = AMAZON_ALEXA; return true;
@@ -2377,9 +2379,14 @@ MDRResult mdrHeadphonesGetPower(MDRHeadphones* headphones, MDRPower* outPower)
     if (h.mProtocolFamily == Headphones::ProtocolFamily::V1)
     {
         const auto& state = h.mDetailsV1;
+        // V1 keeps "off when taken off" as one more auto power off choice.
+        const bool removed =
+            state.mPowerAutoOff.current == mdr::v1::t1::AutoPowerOffElementId::POWER_OFF_WHEN_REMOVED_FROM_EARS;
         *outPower = {
             .auto_power_off_minutes = AutoPowerMinutes(state.mPowerAutoOff.current),
-            .wearing_power = MDR_WEARING_POWER_UNAVAILABLE,
+            .wearing_power = removed ? MDR_WEARING_POWER_WHEN_REMOVED :
+                SupportsFeature(state, MDR_FEATURE_WEARING_DETECTION) ? MDR_WEARING_POWER_DISABLED :
+                MDR_WEARING_POWER_UNAVAILABLE,
             .auto_pause = static_cast<MDRBoolean>(state.mAutoPauseEnabled.current),
             .head_gesture = static_cast<MDRBoolean>(state.mHeadGestureEnabled.current),
             .shutdown_requested = static_cast<MDRBoolean>(state.mShutdown.current)
@@ -2415,8 +2422,9 @@ MDRResult mdrHeadphonesSetPower(MDRHeadphones* headphones, const MDRPower* power
     if (h->mProtocolFamily == Headphones::ProtocolFamily::V1)
     {
         auto value = h->mDetailsV1.mPowerAutoOff.desired;
-        if (!AutoPowerFromMinutes(power->auto_power_off_minutes, value) ||
-            power->wearing_power == MDR_WEARING_POWER_WHEN_REMOVED)
+        if (power->wearing_power == MDR_WEARING_POWER_WHEN_REMOVED)
+            value = mdr::v1::t1::AutoPowerOffElementId::POWER_OFF_WHEN_REMOVED_FROM_EARS;
+        else if (!AutoPowerFromMinutes(power->auto_power_off_minutes, value))
             return MDR_RESULT_ERROR_INVALID_ARGUMENT;
         h->mDetailsV1.mPowerAutoOff.stage(value);
         h->mDetailsV1.mAutoPauseEnabled.stage(power->auto_pause != MDR_FALSE);
