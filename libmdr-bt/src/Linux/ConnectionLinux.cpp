@@ -33,7 +33,7 @@ struct MDRConnectionLinux
             .getLastError = GetLastError
         }),
         lastError(""), dbusConn(dbus_open_system_bus()),
-        fd(0)
+        fd(-1)
     {
     }
 
@@ -44,8 +44,9 @@ struct MDRConnectionLinux
     static MDRResult Connect(void* user, const char* macAddress, const char* serviceUUID) noexcept
     {
         auto* ptr = static_cast<MDRConnectionLinux*>(user);
+        Disconnect(user);
         ptr->fd = socket(AF_BLUETOOTH, SOCK_STREAM | SOCK_NONBLOCK, BTPROTO_RFCOMM);
-        if (!ptr->fd)
+        if (ptr->fd < 0)
         {
             ptr->lastError = "Failed to create RFCOMM socket";
             return MDR_RESULT_ERROR_NET;
@@ -53,11 +54,15 @@ struct MDRConnectionLinux
         unsigned int linkmode = RFCOMM_LM_AUTH | RFCOMM_LM_ENCRYPT;
         setsockopt(ptr->fd, SOL_RFCOMM, RFCOMM_LM, &linkmode, sizeof(linkmode));
         if (serviceUUIDtoBytes(serviceUUID, ptr->uuid) != 0)
+        {
+            Disconnect(user);
             return MDR_RESULT_ERROR_BAD_ADDRESS;
+        }
         ptr->macAddress = macAddress;
         ptr->sdpSession = sdp_connect_nb(macAddress);
         if (!ptr->sdpSession)
         {
+            Disconnect(user);
             ptr->lastError = "Failed to connect to remote SDP server";
             return MDR_RESULT_ERROR_NET;
         }
@@ -68,8 +73,8 @@ struct MDRConnectionLinux
     static void Disconnect(void* user) noexcept
     {
         auto* ptr = static_cast<MDRConnectionLinux*>(user);
-        if (ptr->fd)
-            close(ptr->fd), ptr->fd = 0;
+        if (ptr->fd >= 0)
+            close(ptr->fd), ptr->fd = -1;
         if (ptr->sdpSession)
             sdp_close(ptr->sdpSession), ptr->sdpSession = nullptr;
     }
@@ -77,7 +82,7 @@ struct MDRConnectionLinux
     static MDRResult Recv(void* user, char* dst, int size, int* pReceived) noexcept
     {
         auto* ptr = static_cast<MDRConnectionLinux*>(user);
-        if (!ptr->fd)
+        if (ptr->fd < 0)
             return MDR_RESULT_ERROR_NO_CONNECTION;
         ssize_t received = recv(ptr->fd, dst, size, 0);
         if (received == 0)
@@ -96,7 +101,7 @@ struct MDRConnectionLinux
     static MDRResult Send(void* user, const char* src, int size, int* pSent) noexcept
     {
         auto* ptr = static_cast<MDRConnectionLinux*>(user);
-        if (!ptr->fd)
+        if (ptr->fd < 0)
             return MDR_RESULT_ERROR_NO_CONNECTION;
         ssize_t sent = send(ptr->fd, src, size, 0);
         if (sent == 0)
@@ -147,15 +152,15 @@ struct MDRConnectionLinux
             res = connect(ptr->fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
             if (res != 0 && errno != EINPROGRESS)
             {
-                close(ptr->fd);
-                ptr->fd = 0;
                 ptr->lastError = strerror(errno);
+                close(ptr->fd);
+                ptr->fd = -1;
                 return MDR_RESULT_ERROR_NET;
             }
             ptr->lastError = "Connecting to remote device";
             return MDR_RESULT_INPROGRESS;
         }
-        if (!ptr->fd)
+        if (ptr->fd < 0)
             return MDR_RESULT_ERROR_NO_CONNECTION;
         pollfd pfd{
             .fd = ptr->fd,
@@ -175,18 +180,6 @@ struct MDRConnectionLinux
     static MDRResult GetDevicesList(void* user, MDRDeviceInfo** ppList, int* pCount) noexcept
     {
         auto* ptr = static_cast<MDRConnectionLinux*>(user);
-        *ppList = nullptr;
-        *pCount = 0;
-        // The system bus may have been unavailable at construction (e.g. no
-        // D-Bus in a container, bluetoothd not started yet); libdbus aborts
-        // the process when handed a NULL connection, so retry or bail.
-        if (!ptr->dbusConn)
-            ptr->dbusConn = dbus_open_system_bus();
-        if (!ptr->dbusConn)
-        {
-            ptr->lastError = "Could not connect to the D-Bus system bus";
-            return MDR_RESULT_ERROR_NO_CONNECTION;
-        }
         auto paths = dbus_list_adapters(ptr->dbusConn);
         *ppList = mdr::MDRAllocator<MDRDeviceInfo>().allocate(paths.size());
         *pCount = static_cast<int>(paths.size());
@@ -194,12 +187,8 @@ struct MDRConnectionLinux
         {
             mdr::String name = dbus_get_property(ptr->dbusConn, paths[i].c_str(), "Name");
             mdr::String address = dbus_get_property(ptr->dbusConn, paths[i].c_str(), "Address");
-            // Bluetooth names can be up to 248 bytes, longer than szDeviceName.
-            MDRDeviceInfo& info = (*ppList)[i];
-            strncpy(info.szDeviceName, name.c_str(), sizeof(info.szDeviceName) - 1);
-            info.szDeviceName[sizeof(info.szDeviceName) - 1] = '\0';
-            strncpy(info.szDeviceMacAddress, address.c_str(), sizeof(info.szDeviceMacAddress) - 1);
-            info.szDeviceMacAddress[sizeof(info.szDeviceMacAddress) - 1] = '\0';
+            CopyUtf8((*ppList)[i].szDeviceName, name.c_str());
+            CopyUtf8((*ppList)[i].szDeviceMacAddress, address.c_str());
         }
         return MDR_RESULT_OK;
     }

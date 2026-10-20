@@ -1,8 +1,27 @@
 #pragma once
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <mdr/Protocol.hpp>
+
+/**
+ * @brief Copies a NUL-terminated UTF-8 string without splitting code points when truncating.
+ */
+template <std::size_t Capacity>
+inline void CopyUtf8(char (&destination)[Capacity], const char* source) noexcept
+{
+    static_assert(Capacity > 0, "UTF-8 destination must have room for a terminator");
+    std::memset(destination, 0, Capacity);
+    if (!source)
+        return;
+    std::size_t count = 0;
+    while (count < Capacity - 1 && source[count])
+        ++count;
+    while (count && (static_cast<unsigned char>(source[count]) & 0xc0) == 0x80)
+        --count;
+    std::memcpy(destination, source, count);
+}
 
 /**
  * @brief Converts UUID string to byte array
@@ -31,7 +50,7 @@ inline int serviceUUIDtoBytes(const char* szSrc, uint8_t* dst)
 }
 
 /**
-* @breif Converts a column-seperated Mac address (00:01:02:03:04:05) into an 8-byte int,
+* @brief Converts a column-seperated Mac address (00:01:02:03:04:05) into an 8-byte int,
 *        in little-endian.
 * @returns For the example, in LE: 0x0000000102030405
 */

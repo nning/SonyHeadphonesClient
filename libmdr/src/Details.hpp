@@ -9,6 +9,7 @@
 
 #include <chrono>
 #include <coroutine>
+#include <utility>
 
 namespace mdr
 {
@@ -81,7 +82,12 @@ namespace mdr
 
         MDRTask& operator=(MDRTask&& other) noexcept
         {
-            std::swap(coroutine, other.coroutine), other.coroutine = nullptr;
+            if (this != &other)
+            {
+                if (coroutine)
+                    coroutine.destroy();
+                coroutine = std::exchange(other.coroutine, nullptr);
+            }
             return *this;
         }
 
@@ -141,11 +147,10 @@ namespace mdr
             AwaitType type;
 
             std::coroutine_handle<> h = nullptr;
-            // Timepoint when Awaiter is invoked. Wall time, not clock(): clock() counts
-            // CPU time, which barely advances in an event loop waiting on the device.
-            std::chrono::steady_clock::time_point tick;
+            // Monotonic timepoint when Awaiter is invoked
+            std::chrono::steady_clock::time_point tick = {};
             // Timeout in milliseconds
-            int timeout;
+            int timeout = {};
             // co_await Result on resumption
             int result = MDR_RESULT_OK;
             // Set when @ref Awake found nobody waiting, so the next co_await completes at once
@@ -198,10 +203,14 @@ namespace mdr
         MDRHeadphones& operator=(MDRHeadphones const&) = delete;
         MDRHeadphones& operator=(MDRHeadphones&&) = default;
 
-        constexpr operator bool() const noexcept { return mConn != nullptr; }
+        constexpr operator bool() const noexcept { return mConn != nullptr && !mFailed; }
+        [[nodiscard]] ::MDRResult GetFailure() const noexcept
+        {
+            return mFailed ? mLastErrorCode : MDR_RESULT_OK;
+        }
 
         /**
-         * @breif Receive commands and process events. This is non-blocking, and should be
+         * @brief Receive commands and process events. This is non-blocking, and should be
          *        run in - for example - your UI loop.
          * @note  This is your best friend.
          * @note  This function does not block. To not burn cycles for fun - poll on your @ref MDRConnection
@@ -212,6 +221,8 @@ namespace mdr
         ::MDRResult PollEvents(MDREvent& outEvent);
 
         ::MDRResult SetTimeout(MDRTimeoutType type, int value) noexcept {
+            if (mFailed)
+                return mLastErrorCode;
             if (value <= 0)
                 return MDR_RESULT_ERROR_INVALID_ARGUMENT; 
             switch (type)
@@ -232,6 +243,8 @@ namespace mdr
 
         void SetPacketCallback(MDRPacketCallback callback, void* userData) noexcept
         {
+            if (mFailed)
+                return;
             mPacketCallback = callback;
             mPacketCallbackUserData = userData;
         }
@@ -271,28 +284,23 @@ namespace mdr
          */
         void Awake(AwaitType type);
         /**
-         * @brief Drop signals kept by @ref Awake, so a reply to an earlier request cannot complete
-         *        an @ref Await for the next one.
-         */
-        void ClearAwakeSignals()
-        {
-            for (auto& awaiter : mAwaiters)
-                awaiter.signaled = false;
-        }
-        /**
          * @brief This does what you think it does.
          */
         [[nodiscard]] const char* GetLastError() const { return mLastError.c_str(); }
         /**
-         * @brief Record @p error against @p context and signal it on the event channel.
+         * @brief Invalidate the instance, preserve the first fatal error, and signal it on the event channel.
          */
         int SetLastError(int error, const char* context)
         {
+            if (mFailed)
+                return -1;
             mLastError = context ? context : "";
             mLastError += " (";
             mLastError += mdrResultString(error);
             mLastError += ')';
             mLastErrorCode = static_cast<::MDRResult>(error);
+            mFailed = true;
+            mInitialized = false;
             return -1; // NOTE: convenience only for co_return SetLastError(...);
         }
 
@@ -302,22 +310,17 @@ namespace mdr
 
 #pragma region Tasks
         /**
-         * @brief Selects the wire protocol and initializes its backend.
+         * @brief Runs the selected initialization flags for the active protocol backend.
          */
-        MDRTask RequestInit();
+        MDRTask RequestInit(MDRHeadphonesInitFlags flags);
         /**
-         * @brief Dispatches state synchronization to the selected backend.
+         * @brief Dispatches the selected synchronization flags to the selected backend.
          */
-        MDRTask RequestSync();
+        MDRTask RequestSync(MDRHeadphonesSyncFlags flags);
         /**
          * @brief Dispatches staged changes to the selected backend.
          */
         MDRTask RequestCommit();
-        /**
-         * @brief Dispatches the answer to a device's alert to the selected backend.
-         */
-        MDRTask RequestAlertResponse(int action);
-
         /**
          * @brief Queues an arbitrary debugger payload through the normal Headphones
          * send path. This is an internal C++ developer API, not part of the C ABI.
@@ -325,11 +328,10 @@ namespace mdr
         MDRTask RequestDebugCommand(MDRBuffer payload, MDRDataType type, MDRCommandSeqNumber sequence, bool awaitAck);
         [[nodiscard]] MDRCommandSeqNumber CurrentSequenceNumber() const noexcept { return mSeqNumber; }
 
-        MDRTask RequestInitV1();
-        MDRTask RequestSyncV1();
+        MDRTask RequestInitV1(MDRHeadphonesInitFlags flags);
+        MDRTask RequestSyncV1(MDRHeadphonesSyncFlags flags);
         MDRTask RequestCommitV1();
-        MDRTask RequestAlertResponseV1(int action);
-        void SnapshotPropertiesV1();
+        void SubmitPropertiesV1();
         void RefreshSupportV1();
 
         /**
@@ -337,28 +339,46 @@ namespace mdr
          * @note  To be used with @ref Invoke.
          * @return @ref MDR_EVENT_INITIALIZE_COMPLETE on completion (returned in @ref PollEvents)
          **/
-        MDRTask RequestInitV2();
+        MDRTask RequestInitV2(MDRHeadphonesInitFlags flags);
         /**
          * @brief Requests states that the device won't send automatically. (e.g. Battery levels)
          * @note  To be used with @ref Invoke.
          * @return @ref MDR_EVENT_SYNC_COMPLETE on completion (returned in @ref PollEvents)
          **/
-        MDRTask RequestSyncV2();
+        MDRTask RequestSyncV2(MDRHeadphonesSyncFlags flags);
         /**
          * @brief Requests all changed @ref MDRProperty up until this point to be set on the device
          * @note  To be used with @ref Invoke.
          * @return @ref MDR_EVENT_APPLY_COMPLETE on completion (returned in @ref PollEvents)
          */
         MDRTask RequestCommitV2();
-        /**
-         * @brief Answers the confirmation the device asked for with an alert.
-         * @note  To be used with @ref Invoke.
-         */
-        MDRTask RequestAlertResponseV2(int action);
-        void SnapshotPropertiesV2();
+        void SubmitPropertiesV2();
 #pragma endregion
 
-        // Common lifecycle state; family device state lives in DetailsV1/DetailsV2.
+        // The feature flags that has already been initalized.
+        MDRHeadphonesInitFlags mInitFlags{MDR_HEADPHONES_INIT_NONE};
+
+        // With MDR_EVENT_NEED_SYNC events, the immediate events that needs to be synced (Desync()).
+        // This is only cleared (Sync()) via handlers.
+        MDRHeadphonesSyncFlags mSyncFlags{MDR_HEADPHONES_SYNC_NONE};
+
+        /**
+         * @brief Clears @p flags from @ref mSyncFlags, passing @p event through.
+         */
+        int Sync(MDRHeadphonesSyncFlags flags, int event) noexcept
+        {
+            mSyncFlags &= ~flags;
+            return event;
+        }
+        /**
+         * @brief Marks @p flags stale in @ref mSyncFlags.
+         * @return @ref MDR_EVENT_NEED_SYNC
+         */
+        int Desync(MDRHeadphonesSyncFlags flags) noexcept
+        {
+            mSyncFlags |= flags;
+            return MDR_EVENT_NEED_SYNC;
+        }
         bool mInitialized{};
 
     private:
@@ -372,6 +392,7 @@ namespace mdr
         }
         String mLastError = "N/A";
         ::MDRResult mLastErrorCode{MDR_RESULT_ERROR_GENERAL};
+        bool mFailed{};
 
         // Custom callbacks for e.g. @ref Debugger and whatever. Set via @ref mdrHeadphonesSetPacketCallback
         MDRPacketCallback mPacketCallback{};
@@ -381,7 +402,7 @@ namespace mdr
         Deque<UInt8> mRecvBuf, mSendBuf;        
         MDRCommandSeqNumber mSeqNumber{0};
 
-        // Task STM
+        // Task state machine
         MDRTask mTask;
         Array<Awaiter, AWAIT_NUM_TYPES> mAwaiters{};
 
@@ -494,7 +515,6 @@ namespace mdr::detail
     do                                                                                                                 \
     {                                                                                                                  \
         int _retries;                                                                                                  \
-        ClearAwakeSignals();                                                                                           \
         for (_retries = 0; _retries < mACKRetryCount; _retries++)                                                    \
         {                                                                                                              \
             const int _sendResult = SendCommandImpl<Type>(__VA_ARGS__);                                                \

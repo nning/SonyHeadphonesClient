@@ -1,34 +1,32 @@
 #include "Debugger.hpp"
 
 #include "DebuggerDetails.hpp"
-#include "Details.hpp"
+#include "../libmdr/src/Details.hpp"
 
 #include "Fonts/PlexSansIcon.h"
 #include "Platform/Platform.hpp"
 
 #include <SDL3/SDL_error.h>
-#include <SDL3/SDL_dialog.h>
 #include <SDL3/SDL_filesystem.h>
+#include <SDL3/SDL_init.h>
 #include <SDL3/SDL_iostream.h>
-#include <SDL3/SDL_log.h>
+#include <SDL3/SDL_time.h>
 #include <imgui.h>
 #include <mdr/Command.hpp>
 
 #include <algorithm>
 #include <array>
 #include <cctype>
-#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <iterator>
 #include <limits>
-#include <mutex>
 #include <string_view>
 #include <utility>
 
 namespace
 {
-    using namespace client::debugger;
+    using namespace debugger;
 
     constexpr size_t kMaximumHistory = 512;
 
@@ -67,19 +65,12 @@ namespace
 
     SDL_Window* gWindow{};
     constexpr const char* kDefaultPacketExportPath = "mdr-debugger-packet.bin";
-#ifndef __EMSCRIPTEN__
-    constexpr SDL_DialogFileFilter kPacketFileFilter{"MDR packet", "bin"};
-    constexpr SDL_DialogFileFilter kZipFileFilter{"ZIP archive", "zip"};
-
     struct ExportRequest
     {
-        mdr::MDRBuffer data;
-        mdr::String defaultPath;
-        mdr::String extension;
+        AppLocale locale{};
+        mdr::String result;
     };
-#endif
 
-    std::mutex gExportMutex;
     bool gExportDialogActive{};
     bool gExportResultReady{};
     mdr::String gExportResult;
@@ -87,82 +78,56 @@ namespace
 
     bool WriteCaptureFile(const char* path, mdr::Span<const mdr::UInt8> frame);
 
-#ifndef __EMSCRIPTEN__
-    bool EndsWithCaseInsensitive(std::string_view value, std::string_view suffix)
+    void SDLCALL SetExportResult(void* userdata)
     {
-        return value.size() >= suffix.size() &&
-            std::ranges::equal(
-                value.substr(value.size() - suffix.size()),
-                suffix,
-                [](char lhs, char rhs)
-                {
-                    return std::tolower(static_cast<unsigned char>(lhs)) ==
-                        std::tolower(static_cast<unsigned char>(rhs));
-                });
-    }
-
-    mdr::String ExportPathWithExtension(const char* path, std::string_view extension)
-    {
-        mdr::String result = path;
-        if (!EndsWithCaseInsensitive(result, extension))
-            result += extension;
-        return result;
-    }
-#endif
-
-    void SetExportResult(mdr::String result)
-    {
-        std::scoped_lock lock(gExportMutex);
-        gExportResult = std::move(result);
+        auto* request = static_cast<ExportRequest*>(userdata);
+        gExportResult = std::move(request->result);
         gExportResultReady = true;
         gExportDialogActive = false;
+        mdr::Destruct(request);
     }
 
     void PollExportResult()
     {
-        mdr::String result;
-        {
-            std::scoped_lock lock(gExportMutex);
-            if (!gExportResultReady)
-                return;
-            result = std::move(gExportResult);
-            gExportResult.clear();
-            gExportResultReady = false;
-        }
+        if (!gExportResultReady)
+            return;
+        mdr::String result = std::move(gExportResult);
+        gExportResult.clear();
+        gExportResultReady = false;
         gExportStatus = result;
         gStatus = std::move(result);
     }
 
-#ifndef __EMSCRIPTEN__
-    void SDLCALL ExportDialogCallback(void* userdata, const char* const* filelist, int)
+    void ExportCallback(void* userdata, ClientPlatformSaveBlobResult status, const char* path, const char* error)
     {
         auto* request = static_cast<ExportRequest*>(userdata);
         mdr::String result;
-        if (!filelist)
+        const auto translate = [request](i18n::TextId id) { return i18n::Translate(id, request->locale); };
+        switch (status)
         {
-            const mdr::String dialogError = SDL_GetError();
-            if (WriteCaptureFile(request->defaultPath.c_str(), request->data))
-                result = mdr::Format(
-                    "Exported {} (file dialog unavailable: {})", request->defaultPath, dialogError);
-            else
-                result = mdr::Format("Unable to export {}: {}", request->defaultPath, SDL_GetError());
+        case CLIENT_PLATFORM_SAVE_BLOB_SAVED:
+            result = mdr::Format(fmt::runtime(translate(i18n::TextId::DebuggerExported)), path);
+            break;
+        case CLIENT_PLATFORM_SAVE_BLOB_DISPATCHED:
+            result = mdr::Format(fmt::runtime(translate(i18n::TextId::DebuggerExportDispatched)), path);
+            break;
+        case CLIENT_PLATFORM_SAVE_BLOB_CANCELLED:
+            result = translate(i18n::TextId::DebuggerExportCancelled);
+            break;
+        case CLIENT_PLATFORM_SAVE_BLOB_FAILED:
+            result = mdr::Format(fmt::runtime(translate(i18n::TextId::DebuggerExportFailed)), path, error);
+            break;
+        case CLIENT_PLATFORM_SAVE_BLOB_FALLBACK_SAVED:
+            result = mdr::Format(fmt::runtime(translate(i18n::TextId::DebuggerExportedFallback)), path, error);
+            break;
         }
-        else if (!filelist[0])
+        request->result = std::move(result);
+        if (!SDL_RunOnMainThread(SetExportResult, request, false))
         {
-            result = "Export cancelled";
+            MDR_LOG("Unable to dispatch debugger export result: {}", SDL_GetError());
+            mdr::Destruct(request);
         }
-        else
-        {
-            const mdr::String path = ExportPathWithExtension(filelist[0], request->extension);
-            if (WriteCaptureFile(path.c_str(), request->data))
-                result = mdr::Format("Exported {}", path);
-            else
-                result = SDL_GetError();
-        }
-        mdr::Destruct(request);
-        SetExportResult(std::move(result));
     }
-#endif
 
     bool RequestExport(
         mdr::Span<const mdr::UInt8> data,
@@ -170,53 +135,30 @@ namespace
         const char* filterExtension)
     {
         PollExportResult();
+        if (gExportDialogActive)
         {
-            std::scoped_lock lock(gExportMutex);
-            if (gExportDialogActive)
-            {
-                gStatus = "An export dialog is already open";
-                return false;
-            }
-        }
-
-#ifdef __EMSCRIPTEN__
-        {
-            std::scoped_lock lock(gExportMutex);
-            gExportDialogActive = true;
-        }
-        gExportStatus = gStatus = "Starting browser download";
-        const char* mimeType =
-            std::string_view(filterExtension) == "zip" ? "application/zip" : "application/octet-stream";
-        const bool started =
-            clientPlatformDownloadFile(defaultPath, data.data(), data.size(), mimeType) != 0;
-        SetExportResult(
-            started ? mdr::Format("Downloaded {}", defaultPath) : "Browser download could not be started");
-        return started;
-#else
-        if (!gWindow)
-        {
-            if (WriteCaptureFile(defaultPath, data))
-                gExportStatus = gStatus = mdr::Format("Exported {}", defaultPath);
-            else
-                gExportStatus = gStatus = SDL_GetError();
-            return true;
+            gStatus = Tr(i18n::TextId::DebuggerExportDialogOpen);
+            return false;
         }
 
         auto* request = mdr::Construct<ExportRequest>();
-        request->data.assign(data.begin(), data.end());
-        request->defaultPath = defaultPath;
-        request->extension = mdr::Format(".{}", filterExtension);
+        request->locale = clientGetAppLocale();
+        gExportDialogActive = true;
+        gExportStatus = gStatus = Tr(i18n::TextId::DebuggerChooseDestination);
+        const char* mimeType =
+            std::string_view(filterExtension) == "zip" ? "application/zip" : "application/octet-stream";
+        const int result = clientPlatformSaveBlob(
+            defaultPath, data.data(), data.size(), mimeType, gWindow, ExportCallback, request);
+        if (result != MDR_RESULT_OK)
         {
-            std::scoped_lock lock(gExportMutex);
-            gExportDialogActive = true;
+            const mdr::String error = result == MDR_RESULT_ERROR_NOT_SUPPORTED ? "File saving is not supported"
+                                                                             : SDL_GetError();
+            ExportCallback(request, CLIENT_PLATFORM_SAVE_BLOB_FAILED, defaultPath, error.c_str());
+            PollExportResult();
+            return false;
         }
-        gExportStatus = gStatus = "Choose an export destination";
-        const SDL_DialogFileFilter& filter =
-            std::string_view(filterExtension) == "zip" ? kZipFileFilter : kPacketFileFilter;
-        SDL_ShowSaveFileDialog(
-            ExportDialogCallback, request, gWindow, &filter, 1, request->defaultPath.c_str());
+        PollExportResult();
         return true;
-#endif
     }
 
     template <typename Function>
@@ -255,13 +197,12 @@ namespace
     {
         if (query.empty())
             return true;
-        return std::ranges::search(value, query,
-                                   [](char lhs, char rhs)
-                                   {
-                                       return std::tolower(static_cast<unsigned char>(lhs)) ==
-                                           std::tolower(static_cast<unsigned char>(rhs));
-                                   })
-                   .begin() != value.end();
+        return std::search(value.begin(), value.end(), query.begin(), query.end(),
+                           [](char lhs, char rhs)
+                           {
+                               return std::tolower(static_cast<unsigned char>(lhs)) ==
+                                   std::tolower(static_cast<unsigned char>(rhs));
+                           }) != value.end();
     }
 
     bool ContainsAllTokens(std::string_view value, std::string_view query)
@@ -328,7 +269,8 @@ namespace
 
     CapturedPacket* FindCapture(std::uint64_t id)
     {
-        const auto found = std::ranges::find(gHistory, id, &CapturedPacket::id);
+        const auto found = std::find_if(gHistory.begin(), gHistory.end(),
+                                        [id](const CapturedPacket& packet) { return packet.id == id; });
         return found == gHistory.end() ? nullptr : &*found;
     }
 
@@ -373,10 +315,10 @@ namespace
         gStatus.clear();
     }
 
-    void DrawHex(std::string_view label, mdr::Span<const mdr::UInt8> bytes)
+    void DrawHex(i18n::TextId label, mdr::Span<const mdr::UInt8> bytes)
     {
-        if (!ImGui::TreeNodeEx(label.data(), ImGuiTreeNodeFlags_DefaultOpen, "%.*s [%zu]",
-                               static_cast<int>(label.size()), label.data(), bytes.size()))
+        if (!ImGui::TreeNodeEx(TextLabel(label).c_str(), ImGuiTreeNodeFlags_DefaultOpen, "%s [%zu]",
+                               Tr(label), bytes.size()))
             return;
 
         constexpr size_t bytesPerLine = 8;
@@ -443,13 +385,18 @@ namespace
     {
         const char* direction = packet.direction == MDR_PACKET_DIRECTION_RX ? "RX" : "TX";
         if (IsAck(packet))
-            return mdr::Format("#{} {} ACK seq {:02X}", packet.id, direction, packet.sequence);
+            return mdr::Format("#{} {} ACK seq {:02X} {}", packet.id, direction, packet.sequence,
+                               mdr::Format(fmt::runtime(Tr(i18n::TextId::DebuggerAckSummary)),
+                                           packet.id, direction, packet.sequence));
 
         const mdr::UInt8 command = packet.payload.empty() ? 0 : packet.payload.front();
         const char* packetName =
             packet.candidates.empty() ? "Unknown packet" : ShortPacketName(packet.candidates.front()->name);
-        mdr::String text = mdr::Format("#{} {} {} type {:02X} cmd {:02X} seq {:02X}", packet.id, direction, packetName,
-                                       static_cast<mdr::UInt8>(packet.type), command, packet.sequence);
+        mdr::String text = mdr::Format("#{} {} {} type {:02X} cmd {:02X} seq {:02X} {} {}", packet.id, direction, packetName,
+                                       static_cast<mdr::UInt8>(packet.type), command, packet.sequence,
+                                       packet.candidates.empty() ? Tr(i18n::TextId::DebuggerUnknownPacket) : "",
+                                       mdr::Format(fmt::runtime(Tr(i18n::TextId::DebuggerPacketDetails)),
+                                                   static_cast<mdr::UInt8>(packet.type), command, packet.sequence));
         for (const PacketDescriptor* descriptor : packet.candidates)
             text += mdr::Format(" {}", descriptor->name);
         return text;
@@ -464,7 +411,7 @@ namespace
     {
         if (gHistory.empty())
         {
-            constexpr const char* placeholder = "Commands from the headphones will appear here.";
+            const char* placeholder = Tr(i18n::TextId::DebuggerHistoryEmpty);
             const ImVec2 textSize = ImGui::CalcTextSize(placeholder);
             ImGui::SetCursorPos({std::max(0.0f, (ImGui::GetContentRegionAvail().x - textSize.x) * 0.5f),
                                  std::max(0.0f, (ImGui::GetContentRegionAvail().y - textSize.y) * 0.5f)});
@@ -490,7 +437,7 @@ namespace
             if (IsAck(packet))
             {
                 const mdr::String ackLabel =
-                    mdr::Format("#{}  {} ACK  seq {:02X}", packet.id, direction, packet.sequence);
+                    mdr::Format(fmt::runtime(Tr(i18n::TextId::DebuggerAckSummary)), packet.id, direction, packet.sequence);
                 ImGui::BeginDisabled();
                 ImGui::TextUnformatted(ackLabel.c_str());
                 ImGui::EndDisabled();
@@ -514,19 +461,23 @@ namespace
             ImGui::PushStyleColor(ImGuiCol_HeaderActive, hoveredColor);
             const mdr::UInt8 command = packet.payload.empty() ? 0 : packet.payload.front();
             const char* packetName =
-                packet.candidates.empty() ? "Unknown packet" : ShortPacketName(packet.candidates.front()->name);
-            mdr::String details = mdr::Format("type {:02X}  cmd {:02X}  seq {:02X}",
+                packet.candidates.empty() ? Tr(i18n::TextId::DebuggerUnknownPacket) : ShortPacketName(packet.candidates.front()->name);
+            mdr::String details = mdr::Format(fmt::runtime(Tr(i18n::TextId::DebuggerPacketDetails)),
                                               static_cast<mdr::UInt8>(packet.type), command, packet.sequence);
             if (packet.candidates.size() > 1)
-                details += mdr::Format("  {} layouts", packet.candidates.size());
-            const mdr::String label = mdr::Format("#{} {} - {}\n{}", packet.id, direction, packetName, details);
-            const float rowHeight = ImGui::GetTextLineHeightWithSpacing() + ImGui::GetStyle().FramePadding.y * 2;
+                details += mdr::Format(fmt::runtime(Tr(i18n::TextId::DebuggerLayoutCount)), packet.candidates.size());
+            const mdr::String label = mdr::Format("#{} {} - {}\n{}###capture", packet.id, direction, packetName, details);
+            const auto& style = ImGui::GetStyle();
+            const float lineHeight = ImGui::GetTextLineHeight();
+            const float rowPaddingY = lineHeight * 0.2f;
+            const float rowHeight = lineHeight * 2.0f + rowPaddingY * 2.0f;
+            ImGui::PushStyleVar(ImGuiStyleVar_SelectableTextAlign, {style.SelectableTextAlign.x, 0.5f});
             if (ImGui::Selectable(label.c_str(), selected, ImGuiSelectableFlags_None,
                                   {ImGui::GetContentRegionAvail().x, rowHeight}))
                 SelectCapture(packet);
+            ImGui::PopStyleVar();
             ImGui::PopStyleColor(3);
             ImGui::PopID();
-            ImGui::Dummy({0.0f, 3.0f});
 
             if (gScrollToLatest && isLatest)
             {
@@ -537,7 +488,7 @@ namespace
 
         if (!drewPacket)
         {
-            constexpr const char* placeholder = "No packets match the current filter.";
+            const char* placeholder = Tr(i18n::TextId::DebuggerFilterEmpty);
             const ImVec2 textSize = ImGui::CalcTextSize(placeholder);
             ImGui::SetCursorPos({std::max(0.0f, (ImGui::GetContentRegionAvail().x - textSize.x) * 0.5f),
                                  std::max(0.0f, (ImGui::GetContentRegionAvail().y - textSize.y) * 0.5f)});
@@ -558,7 +509,7 @@ namespace
 
     void DrawNewPacketPicker()
     {
-        if (ImGui::Button("Command..."))
+        if (ImGui::Button(TextLabel(i18n::TextId::DebuggerCommand).c_str()))
             ImGui::OpenPopup("New Packet");
         if (!ImGui::BeginPopup("New Packet"))
             return;
@@ -568,10 +519,10 @@ namespace
         ImGui::SameLine();
         ImGui::RadioButton("V2", &family, 1);
         gNewPacketFamily = family == 0 ? ProtocolFamily::V1 : ProtocolFamily::V2;
-        ImGui::RadioButton("Table 1", &gNewPacketTable, 0);
+        ImGui::RadioButton(TextLabel(i18n::TextId::DebuggerTable1).c_str(), &gNewPacketTable, 0);
         ImGui::SameLine();
-        ImGui::RadioButton("Table 2", &gNewPacketTable, 1);
-        ImGui::InputTextWithHint("##type-filter", "Filter packet types (space-separated)", gTypeFilter.data(),
+        ImGui::RadioButton(TextLabel(i18n::TextId::DebuggerTable2).c_str(), &gNewPacketTable, 1);
+        ImGui::InputTextWithHint("##type-filter", Tr(i18n::TextId::DebuggerFilterTypes), gTypeFilter.data(),
                                  gTypeFilter.size());
         ImGui::BeginChild("##packet-types", {600.0f, 320.0f}, ImGuiChildFlags_Borders);
         ForEachDescriptor(
@@ -591,8 +542,8 @@ namespace
     {
         if (gSelectedCandidates.size() <= 1)
             return;
-        const char* preview = gPacket ? gPacket.Descriptor().name : "Choose a layout";
-        if (ImGui::BeginCombo("Packet layout", preview))
+        const char* preview = gPacket ? gPacket.Descriptor().name : Tr(i18n::TextId::DebuggerChooseLayout);
+        if (ImGui::BeginCombo(TextLabel(i18n::TextId::DebuggerPacketLayout).c_str(), preview))
         {
             CapturedPacket* capture = FindCapture(gSelectedCaptureId);
             for (const PacketDescriptor* descriptor : gSelectedCandidates)
@@ -645,7 +596,7 @@ namespace
         if (replacement)
         {
             CreatePacket(*replacement);
-            gStatus = mdr::Format("Switched to {}", replacement->name);
+            gStatus = mdr::Format(fmt::runtime(Tr(i18n::TextId::DebuggerSwitchedLayout)), replacement->name);
             return true;
         }
 
@@ -653,7 +604,7 @@ namespace
         if (previousPayload.empty() || !current.decode(restored.Value(), previousPayload))
             restored = PacketInstance{current};
         gPacket = std::move(restored);
-        gStatus = mdr::Format("No packet layout matches command {:02X}", command);
+        gStatus = mdr::Format(fmt::runtime(Tr(i18n::TextId::DebuggerNoMatchingLayout)), command);
         return false;
     }
 
@@ -669,16 +620,16 @@ namespace
         {
             if (const CapturedPacket* capture = FindCapture(gSelectedCaptureId))
             {
-                ImGui::SeparatorText("Unknown packet");
+                ImGui::SeparatorText(Tr(i18n::TextId::DebuggerUnknownPacket));
                 if (capture->unpacked)
-                    DrawHex("Encoded payload", capture->payload);
+                    DrawHex(i18n::TextId::DebuggerEncodedPayload, capture->payload);
                 else
-                    ImGui::TextColored({1.0f, 0.45f, 0.35f, 1.0f}, "The captured frame could not be unpacked.");
-                DrawHex("Packed frame", capture->frame);
+                    ImGui::TextColored({1.0f, 0.45f, 0.35f, 1.0f}, "%s", Tr(i18n::TextId::DebuggerUnpackFailed));
+                DrawHex(i18n::TextId::DebuggerPackedFrame, capture->frame);
                 return;
             }
 
-            constexpr const char* placeholder = "Select a command above or create a new packet below.";
+            const char* placeholder = Tr(i18n::TextId::DebuggerEditorEmpty);
             const ImVec2 textSize = ImGui::CalcTextSize(placeholder);
             ImGui::SetCursorPosX(std::max(0.0f, (ImGui::GetContentRegionAvail().x - textSize.x) * 0.5f));
             ImGui::TextDisabled("%s", placeholder);
@@ -698,20 +649,20 @@ namespace
         const auto validation = gPacket.Descriptor().validate(gPacket.Value());
         if (validation)
         {
-            ImGui::TextColored({0.3f, 0.9f, 0.4f, 1.0f}, "Validation: valid");
+            ImGui::TextColored({0.3f, 0.9f, 0.4f, 1.0f}, "%s", Tr(i18n::TextId::DebuggerValidationValid));
         }
         else
         {
-            ImGui::TextColored({1.0f, 0.45f, 0.35f, 1.0f}, "Validation: %s",
+            ImGui::TextColored({1.0f, 0.45f, 0.35f, 1.0f}, Tr(i18n::TextId::DebuggerValidationError),
                                validation.errMessage ? validation.errMessage : mdrResultString(validation.error));
         }
 
         const bool encoded = UpdateEncodedPayload();
         if (encoded)
         {
-            DrawHex("Encoded payload", gEncodedPayload);
+            DrawHex(i18n::TextId::DebuggerEncodedPayload, gEncodedPayload);
             const mdr::MDRBuffer frame = mdr::MDRPackCommand(gEnvelopeType, gEnvelopeSequence, gEncodedPayload);
-            DrawHex("Packed frame", frame);
+            DrawHex(i18n::TextId::DebuggerPackedFrame, frame);
         }
 
         if (!gStatus.empty())
@@ -734,61 +685,109 @@ namespace
         gEnvelopeSequence = h->CurrentSequenceNumber();
         const int result =
             h->Invoke(h->RequestDebugCommand(gEncodedPayload, gEnvelopeType, gEnvelopeSequence, gAwaitAck));
-        gStatus = result == MDR_RESULT_OK ? "Packet queued" : mdrResultString(result);
+        gStatus = result == MDR_RESULT_OK ? Tr(i18n::TextId::DebuggerPacketQueued) : mdrResultString(result);
     }
 
-    void DrawComposer()
+    float ButtonWidth(const char* label)
     {
+        return ImGui::CalcTextSize(label, nullptr, true).x + ImGui::GetStyle().FramePadding.x * 2.0f;
+    }
+
+    void NextToolbarItem(float width, bool alignRight = false)
+    {
+        const float rightEdge = ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x;
+        const float nextX = ImGui::GetItemRectMax().x - ImGui::GetWindowPos().x + ImGui::GetStyle().ItemSpacing.x;
+        if (nextX + width <= rightEdge)
+            ImGui::SameLine(alignRight ? rightEdge - width : nextX);
+        else if (alignRight)
+            ImGui::SetCursorPosX(std::max(ImGui::GetCursorPosX(), rightEdge - width));
+    }
+
+    std::array<float, 7> ComposerItemWidths()
+    {
+        const ImGuiStyle& style = ImGui::GetStyle();
+        const float scalarWidth = ImGui::CalcTextSize("255").x + style.FramePadding.x * 2.0f;
+        return {
+            ButtonWidth(Tr(i18n::TextId::DebuggerCommand)),
+            ButtonWidth(Tr(i18n::TextId::DebuggerReset)),
+            scalarWidth + ImGui::GetFrameHeight() * 2.0f + style.ItemInnerSpacing.x * 3.0f +
+                ImGui::CalcTextSize(Tr(i18n::TextId::DebuggerType)).x,
+            scalarWidth + style.ItemInnerSpacing.x + ImGui::CalcTextSize(Tr(i18n::TextId::DebuggerSequence)).x,
+            ImGui::GetFrameHeight() + style.ItemInnerSpacing.x + ImGui::CalcTextSize("ACK").x,
+            ButtonWidth(Tr(i18n::TextId::DebuggerExport)),
+            ButtonWidth(Tr(i18n::TextId::DebuggerSend))};
+    }
+
+    float ComposerHeight(float width)
+    {
+        const float availableWidth = std::max(1.0f, width - 20.0f);
+        float rowWidth = 0.0f;
+        float height = ImGui::GetFrameHeight() + 18.0f;
+        for (const float itemWidth : ComposerItemWidths())
+        {
+            if (rowWidth > 0.0f && rowWidth + itemWidth > availableWidth)
+            {
+                rowWidth = 0.0f;
+                height += ImGui::GetFrameHeightWithSpacing();
+            }
+            rowWidth += itemWidth + ImGui::GetStyle().ItemSpacing.x;
+        }
+        return height;
+    }
+
+    void DrawComposer(float height)
+    {
+        const auto widths = ComposerItemWidths();
         ImVec4 composerColor = ImGui::GetStyleColorVec4(ImGuiCol_CheckMark);
         composerColor.w = 0.13f;
         ImGui::PushStyleColor(ImGuiCol_ChildBg, composerColor);
         ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, ImGui::GetStyle().FrameRounding);
-        if (ImGui::BeginChild("##command-composer", {-1.0f, ImGui::GetFrameHeightWithSpacing() + 18.0f},
-                              ImGuiChildFlags_None, ImGuiWindowFlags_NoScrollbar))
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, {10.0f, 9.0f});
+        if (ImGui::BeginChild("##command-composer", {0.0f, height}, ImGuiChildFlags_AlwaysUseWindowPadding,
+                              ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse))
         {
-            ImGui::SetCursorPos({10.0f, 9.0f});
             DrawNewPacketPicker();
-            ImGui::SameLine();
+            NextToolbarItem(widths[1]);
 
             ImGui::BeginDisabled(!gPacket);
-            if (ImGui::Button("Reset"))
+            if (ImGui::Button(TextLabel(i18n::TextId::DebuggerReset).c_str()))
                 ResetPacket();
-            ImGui::SameLine();
+            NextToolbarItem(widths[2]);
 
             int type = static_cast<int>(gEnvelopeType);
-            ImGui::SetNextItemWidth(70.0f);
-            if (ImGui::InputInt("Type", &type))
+            const float labelSpacing = ImGui::GetStyle().ItemInnerSpacing.x;
+            ImGui::SetNextItemWidth(widths[2] - labelSpacing - ImGui::CalcTextSize(Tr(i18n::TextId::DebuggerType)).x);
+            if (ImGui::InputInt(TextLabel(i18n::TextId::DebuggerType).c_str(), &type))
                 gEnvelopeType = static_cast<mdr::MDRDataType>(type);
-            ImGui::SameLine();
+            NextToolbarItem(widths[3]);
             if (gHeadphones)
                 gEnvelopeSequence = mdr::detail::HeadphonesImpl(gHeadphones)->CurrentSequenceNumber();
-            ImGui::SetNextItemWidth(55.0f);
+            ImGui::SetNextItemWidth(widths[3] - labelSpacing - ImGui::CalcTextSize(Tr(i18n::TextId::DebuggerSequence)).x);
             ImGui::BeginDisabled(gHeadphones != nullptr);
-            DrawScalar("Seq", gEnvelopeSequence);
+            DrawScalar(TextLabel(i18n::TextId::DebuggerSequence).c_str(), gEnvelopeSequence);
             ImGui::EndDisabled();
-            ImGui::SameLine();
+            NextToolbarItem(widths[4]);
             ImGui::Checkbox("ACK", &gAwaitAck);
-            ImGui::SameLine();
+            NextToolbarItem(widths[5]);
 
             const bool encoded = UpdateEncodedPayload();
             ImGui::BeginDisabled(!encoded || clientDebuggerExportInProgress());
-            if (ImGui::Button("Export"))
+            if (ImGui::Button(TextLabel(i18n::TextId::DebuggerExport).c_str()))
             {
                 ExportPacket(mdr::MDRPackCommand(gEnvelopeType, gEnvelopeSequence, gEncodedPayload));
             }
             ImGui::EndDisabled();
 
             const bool canSend = encoded && gHeadphones && mdrHeadphonesIsReady(gHeadphones);
-            const float sendWidth = ImGui::CalcTextSize("Send").x + ImGui::GetStyle().FramePadding.x * 2.0f;
-            ImGui::SameLine(std::max(ImGui::GetCursorPosX(), ImGui::GetWindowWidth() - sendWidth - 12.0f));
+            NextToolbarItem(widths[6], true);
             ImGui::BeginDisabled(!canSend);
-            if (ImGui::Button("Send"))
+            if (ImGui::Button(TextLabel(i18n::TextId::DebuggerSend).c_str()))
                 SendPacket();
             ImGui::EndDisabled();
             ImGui::EndDisabled();
         }
         ImGui::EndChild();
-        ImGui::PopStyleVar();
+        ImGui::PopStyleVar(2);
         ImGui::PopStyleColor();
     }
 
@@ -939,11 +938,13 @@ namespace
         return archive;
     }
 
-    std::int64_t ExportTimestamp()
+    bool ExportTimestamp(std::int64_t& timestamp)
     {
-        return std::chrono::duration_cast<std::chrono::milliseconds>(
-                   std::chrono::system_clock::now().time_since_epoch())
-            .count();
+        SDL_Time now{};
+        if (!SDL_GetCurrentTime(&now))
+            return false;
+        timestamp = now / 1'000'000;
+        return true;
     }
 
     struct ReplayCapture
@@ -981,9 +982,8 @@ namespace
         if (path.size() < extension.size())
             return false;
         const std::string_view suffix = path.substr(path.size() - extension.size());
-        return std::ranges::equal(
-            suffix,
-            extension,
+        return std::equal(
+            suffix.begin(), suffix.end(), extension.begin(),
             [](char lhs, char rhs)
             {
                 return std::tolower(static_cast<unsigned char>(lhs)) ==
@@ -994,53 +994,66 @@ namespace
     void DrawHistoryToolbar(bool* open, bool replayMode)
     {
         ImGui::AlignTextToFramePadding();
-        ImGui::TextUnformatted("Packets");
-        ImGui::SameLine();
-        if (ImGui::Button(gFollowMessages ? PSI_SIGNAL " Follow: On" : PSI_SIGNAL " Follow: Off"))
+        ImGui::TextUnformatted(Tr(i18n::TextId::DebuggerPackets));
+        const mdr::String followLabel = mdr::Format(
+            "{} {}###follow-messages", PSI_SIGNAL,
+            Tr(gFollowMessages ? i18n::TextId::DebuggerFollowOn : i18n::TextId::DebuggerFollowOff));
+        NextToolbarItem(ButtonWidth(followLabel.c_str()));
+        if (ImGui::Button(followLabel.c_str()))
             gFollowMessages = !gFollowMessages;
 
-        const float dumpWidth =
-            ImGui::CalcTextSize(PSI_SAVE " Export ZIP").x + ImGui::GetStyle().FramePadding.x * 2.0f;
-        const float clearWidth =
-            ImGui::CalcTextSize(PSI_TRASH " Clear").x + ImGui::GetStyle().FramePadding.x * 2.0f;
-        const char* closeLabel = replayMode ? "Quit replay" : "Close";
-        const float closeWidth =
-            open ? ImGui::CalcTextSize(closeLabel).x + ImGui::GetStyle().FramePadding.x * 2.0f : 0.0f;
+        const mdr::String dumpLabel = TextLabel(i18n::TextId::ExportZip, PSI_SAVE);
+        const mdr::String clearLabel = TextLabel(i18n::TextId::DebuggerClear, PSI_TRASH);
+        const mdr::String closeLabel = TextLabel(
+            replayMode ? i18n::TextId::DebuggerQuitReplay : i18n::TextId::DebuggerClose);
         const float buttonSpacing = ImGui::GetStyle().ItemSpacing.x;
-        const float rightEdge = ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x;
-        const float rightButtons = dumpWidth + buttonSpacing + clearWidth + (open ? buttonSpacing + closeWidth : 0.0f);
-        ImGui::SameLine(std::max(ImGui::GetCursorPosX(), rightEdge - rightButtons));
+        const float rightButtons = ButtonWidth(dumpLabel.c_str()) + buttonSpacing + ButtonWidth(clearLabel.c_str()) +
+            (open ? buttonSpacing + ButtonWidth(closeLabel.c_str()) : 0.0f);
+        const float statusAvailable = ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x -
+            ImGui::GetItemRectMax().x - rightButtons - buttonSpacing * 2.0f;
+        const float statusWidth = gExportStatus.empty() ? 0.0f :
+            std::min(ImGui::CalcTextSize(gExportStatus.c_str()).x, std::max(0.0f, statusAvailable));
+        const float toolbarWidth = rightButtons + (statusWidth > 0.0f ? statusWidth + buttonSpacing : 0.0f);
+        NextToolbarItem(std::min(toolbarWidth, ImGui::GetContentRegionAvail().x), true);
+        if (statusWidth > 0.0f)
+        {
+            const ImVec2 position = ImGui::GetCursorScreenPos();
+            const float frameHeight = ImGui::GetFrameHeight();
+            const ImVec4 clipRect(position.x, position.y, position.x + statusWidth, position.y + frameHeight);
+            ImGui::GetWindowDrawList()->AddText(
+                ImGui::GetFont(), ImGui::GetFontSize(),
+                {position.x, position.y + ImGui::GetStyle().FramePadding.y},
+                ImGui::GetColorU32(ImGuiCol_TextDisabled), gExportStatus.c_str(), nullptr, 0.0f, &clipRect);
+            ImGui::Dummy({statusWidth, frameHeight});
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("%s", gExportStatus.c_str());
+            ImGui::SameLine();
+        }
         ImGui::BeginDisabled(gHistory.empty() || clientDebuggerExportInProgress());
-        if (ImGui::Button(PSI_SAVE " Export ZIP"))
+        if (ImGui::Button(dumpLabel.c_str()))
             clientDebuggerExportPacketCollection();
         ImGui::EndDisabled();
-        ImGui::SameLine();
-        if (ImGui::Button(PSI_TRASH " Clear"))
+        NextToolbarItem(ButtonWidth(clearLabel.c_str()));
+        if (ImGui::Button(clearLabel.c_str()))
             ClearHistory();
         if (open)
         {
-            ImGui::SameLine();
+            NextToolbarItem(ButtonWidth(closeLabel.c_str()));
             ImGui::PushStyleColor(ImGuiCol_Button, IM_COL32(200, 0, 0, 255));
-            if (ImGui::Button(closeLabel))
+            if (ImGui::Button(closeLabel.c_str()))
             {
                 *open = false;
                 ImGui::CloseCurrentPopup();
             }
             ImGui::PopStyleColor();
         }
-
-        ImGui::SetNextItemWidth(-1.0f);
-        ImGui::InputTextWithHint("##history-filter", PSI_FILTER " Filter packets (space-separated)",
-                                 gHistoryFilter.data(), gHistoryFilter.size());
-        if (!gExportStatus.empty())
-            ImGui::TextWrapped("%s", gExportStatus.c_str());
     }
 } // namespace
 
 bool clientDebuggerWritePacketFile(const char* path, const unsigned char* frame, size_t frameSize)
 {
     if (!path || !*path || !frame || frameSize == 0)
-        return SDL_SetError("Invalid packet file export arguments");
+        return SDL_SetError("%s", Tr(i18n::TextId::DebuggerInvalidExportArguments));
     return WriteCaptureFile(path, {frame, frameSize});
 }
 
@@ -1084,7 +1097,7 @@ bool clientDebuggerReplayPath(const char* path, size_t* packetCount)
     if (packetCount)
         *packetCount = 0;
     if (!path || !*path)
-        return SDL_SetError("Replay path is empty");
+        return SDL_SetError("%s", Tr(i18n::TextId::DebuggerReplayPathEmpty));
 
     SDL_PathInfo pathInfo{};
     if (!SDL_GetPathInfo(path, &pathInfo))
@@ -1092,9 +1105,9 @@ bool clientDebuggerReplayPath(const char* path, size_t* packetCount)
     if (pathInfo.type == SDL_PATHTYPE_DIRECTORY)
         return clientDebuggerReplayDirectory(path, packetCount);
     if (pathInfo.type != SDL_PATHTYPE_FILE)
-        return SDL_SetError("Replay path is not a file or folder: %s", path);
+        return SDL_SetError(Tr(i18n::TextId::DebuggerReplayNotFileOrFolder), path);
     if (!IsBinPath(path))
-        return SDL_SetError("Replay file is not a .bin payload: %s", path);
+        return SDL_SetError(Tr(i18n::TextId::DebuggerReplayNotBin), path);
 
     size_t frameSize{};
     void* frame = SDL_LoadFile(path, &frameSize);
@@ -1103,7 +1116,7 @@ bool clientDebuggerReplayPath(const char* path, size_t* packetCount)
     if (frameSize == 0 || frameSize > static_cast<size_t>(std::numeric_limits<int>::max()))
     {
         SDL_free(frame);
-        return SDL_SetError("Invalid packet size in %s", path);
+        return SDL_SetError(Tr(i18n::TextId::DebuggerInvalidPacketSize), path);
     }
 
     MDRPacketDirection direction = MDR_PACKET_DIRECTION_RX;
@@ -1117,7 +1130,7 @@ bool clientDebuggerReplayPath(const char* path, size_t* packetCount)
 
     if (packetCount)
         *packetCount = 1;
-    gStatus = mdr::Format("Replayed 1 packet from {}", path);
+    gStatus = mdr::Format(fmt::runtime(Tr(i18n::TextId::DebuggerReplayed)), 1, path);
     return true;
 }
 
@@ -1125,7 +1138,6 @@ bool clientDebuggerHasPackets() { return !gHistory.empty(); }
 
 bool clientDebuggerExportInProgress()
 {
-    std::scoped_lock lock(gExportMutex);
     return gExportDialogActive;
 }
 
@@ -1133,7 +1145,7 @@ bool clientDebuggerExportLatestPacket()
 {
     if (gHistory.empty())
     {
-        gExportStatus = gStatus = "No packets available to export";
+        gExportStatus = gStatus = Tr(i18n::TextId::DebuggerNoPackets);
         return false;
     }
     return RequestExport(
@@ -1144,10 +1156,15 @@ bool clientDebuggerExportPacketCollection()
 {
     if (gHistory.empty())
     {
-        gExportStatus = gStatus = "No packets available to export";
+        gExportStatus = gStatus = Tr(i18n::TextId::DebuggerNoPackets);
         return false;
     }
-    const std::int64_t timestamp = ExportTimestamp();
+    std::int64_t timestamp{};
+    if (!ExportTimestamp(timestamp))
+    {
+        gExportStatus = gStatus = mdr::Format(fmt::runtime(Tr(i18n::TextId::DebuggerTimestampFailed)), SDL_GetError());
+        return false;
+    }
     const mdr::MDRBuffer archive = BuildHistoryZip(timestamp);
     const mdr::String defaultPath = mdr::Format("mdr-debugger-packets-{}.zip", timestamp);
     return RequestExport(archive, defaultPath.c_str(), "zip");
@@ -1156,10 +1173,13 @@ bool clientDebuggerExportPacketCollection()
 bool clientDebuggerWritePacketCollectionFile(const char* path)
 {
     if (!path || !*path)
-        return SDL_SetError("Packet collection export path is empty");
+        return SDL_SetError("%s", Tr(i18n::TextId::DebuggerExportPathEmpty));
     if (gHistory.empty())
-        return SDL_SetError("No packets available to export");
-    const mdr::MDRBuffer archive = BuildHistoryZip(ExportTimestamp());
+        return SDL_SetError("%s", Tr(i18n::TextId::DebuggerNoPackets));
+    std::int64_t timestamp{};
+    if (!ExportTimestamp(timestamp))
+        return false;
+    const mdr::MDRBuffer archive = BuildHistoryZip(timestamp);
     return WriteCaptureFile(path, archive);
 }
 
@@ -1180,13 +1200,13 @@ bool clientDebuggerReplayDirectory(const char* directory, size_t* packetCount)
     if (packetCount)
         *packetCount = 0;
     if (!directory || !*directory)
-        return SDL_SetError("Replay folder is empty");
+        return SDL_SetError("%s", Tr(i18n::TextId::DebuggerReplayFolderEmpty));
 
     SDL_PathInfo directoryInfo{};
     if (!SDL_GetPathInfo(directory, &directoryInfo))
         return false;
     if (directoryInfo.type != SDL_PATHTYPE_DIRECTORY)
-        return SDL_SetError("Replay path is not a folder: %s", directory);
+        return SDL_SetError(Tr(i18n::TextId::DebuggerReplayNotFolder), directory);
 
     int entryCount{};
     char** entries = SDL_GlobDirectory(directory, "mdr-packet-*.bin", 0, &entryCount);
@@ -1207,9 +1227,10 @@ bool clientDebuggerReplayDirectory(const char* directory, size_t* packetCount)
     }
     SDL_free(entries);
 
-    std::ranges::sort(captures, {}, &ReplayCapture::filename);
+    std::sort(captures.begin(), captures.end(),
+              [](const ReplayCapture& lhs, const ReplayCapture& rhs) { return lhs.filename < rhs.filename; });
     if (captures.empty())
-        return SDL_SetError("Replay folder contains no mdr-packet-*-rx/tx .bin files: %s", directory);
+        return SDL_SetError(Tr(i18n::TextId::DebuggerReplayNoFiles), directory);
 
     for (ReplayCapture& capture : captures)
     {
@@ -1220,7 +1241,7 @@ bool clientDebuggerReplayDirectory(const char* directory, size_t* packetCount)
         if (frameSize == 0 || frameSize > static_cast<size_t>(std::numeric_limits<int>::max()))
         {
             SDL_free(frame);
-            return SDL_SetError("Invalid packet size in %s", capture.path.c_str());
+            return SDL_SetError(Tr(i18n::TextId::DebuggerInvalidPacketSize), capture.path.c_str());
         }
         const auto* bytes = static_cast<const mdr::UInt8*>(frame);
         capture.frame.assign(bytes, bytes + frameSize);
@@ -1238,30 +1259,27 @@ bool clientDebuggerReplayDirectory(const char* directory, size_t* packetCount)
     gHeadphones = attachedHeadphones;
     if (packetCount)
         *packetCount = captures.size();
-    gStatus = mdr::Format("Replayed {} packet(s) from {}", captures.size(), directory);
+    gStatus = mdr::Format(fmt::runtime(Tr(i18n::TextId::DebuggerReplayed)), captures.size(), directory);
     return true;
 }
 
 void clientDebuggerDraw(bool* open, bool replayMode)
 {
     PollExportResult();
-    const ImVec2 displaySize = ImGui::GetIO().DisplaySize;
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    const ImVec2 workSize = viewport->WorkSize;
     if (!ImGui::IsPopupOpen("Debugger"))
         ImGui::OpenPopup("Debugger");
-    ImGui::SetNextWindowSize({displaySize.x, displaySize.y * 0.8f}, ImGuiCond_Appearing);
-    ImGui::SetNextWindowSizeConstraints({displaySize.x, 0.0f},
-                                        {displaySize.x, std::numeric_limits<float>::max()});
-    ImGui::SetNextWindowPos({displaySize.x * 0.5f, displaySize.y * 0.5f}, ImGuiCond_Appearing, {0.5f, 0.5f});
+    ImGui::SetNextWindowSize({workSize.x, workSize.y * 0.8f}, ImGuiCond_Appearing);
+    ImGui::SetNextWindowSizeConstraints({workSize.x, 0.0f}, workSize);
+    ImGui::SetNextWindowPos(viewport->GetWorkCenter(), ImGuiCond_Always, {0.5f, 0.5f});
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, {20.0f, 16.0f});
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, {8.0f, 8.0f});
-    if (!ImGui::BeginPopupModal("Debugger", open, ImGuiWindowFlags_NoTitleBar))
+    if (!ImGui::BeginPopupModal("Debugger", open, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoMove))
     {
         ImGui::PopStyleVar(2);
         return;
     }
-
-    if (const ImVec2 windowPos = ImGui::GetWindowPos(); windowPos.x != 0.0f)
-        ImGui::SetWindowPos({0.0f, windowPos.y});
 
     if (open && ImGui::IsKeyPressed(ImGuiKey_Escape))
     {
@@ -1269,30 +1287,42 @@ void clientDebuggerDraw(bool* open, bool replayMode)
         ImGui::CloseCurrentPopup();
     }
 
+    DrawHistoryToolbar(open, replayMode);
+    ImGui::Separator();
+
+    const float composerHeight = ComposerHeight(ImGui::GetContentRegionAvail().x);
+    const float panelsHeight = std::max(1.0f, ImGui::GetContentRegionAvail().y - composerHeight - ImGui::GetStyle().ItemSpacing.y);
+    const float panelHeight = std::max(1.0f, panelsHeight - ImGui::GetStyle().CellPadding.y * 2.0f);
     if (ImGui::BeginTable("##debugger-panels", 2,
                           ImGuiTableFlags_Resizable | ImGuiTableFlags_BordersInnerV |
-                              ImGuiTableFlags_SizingStretchProp))
+                              ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_NoHostExtendY,
+                          {0.0f, panelsHeight}))
     {
-        ImGui::TableSetupColumn("Packets", ImGuiTableColumnFlags_WidthStretch, 0.42f);
-        ImGui::TableSetupColumn("Controls", ImGuiTableColumnFlags_WidthStretch, 0.58f);
+        ImGui::TableSetupColumn(Tr(i18n::TextId::DebuggerPackets), ImGuiTableColumnFlags_WidthStretch, 0.42f);
+        ImGui::TableSetupColumn(Tr(i18n::TextId::Controls), ImGuiTableColumnFlags_WidthStretch, 0.58f);
         ImGui::TableNextRow();
         ImGui::TableSetColumnIndex(0);
-        DrawHistoryToolbar(open, replayMode);
-        ImGui::Separator();
-        if (ImGui::BeginChild("##command-history", {-1.0f, -1.0f}))
-            DrawHistory();
+        if (ImGui::BeginChild("##history-panel", {0.0f, panelHeight}, ImGuiChildFlags_None,
+                              ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse))
+        {
+            ImGui::SetNextItemWidth(-1.0f);
+            const mdr::String filterHint = mdr::Format("{} {}", PSI_FILTER, Tr(i18n::TextId::DebuggerFilterPackets));
+            ImGui::InputTextWithHint("##history-filter", filterHint.c_str(),
+                                     gHistoryFilter.data(), gHistoryFilter.size());
+            ImGui::Separator();
+            if (ImGui::BeginChild("##command-history", {0.0f, 0.0f}))
+                DrawHistory();
+            ImGui::EndChild();
+        }
         ImGui::EndChild();
 
         ImGui::TableSetColumnIndex(1);
-        const float composerHeight = ImGui::GetFrameHeightWithSpacing() + 18.0f;
-        const float editorHeight = std::max(100.0f, ImGui::GetContentRegionAvail().y - composerHeight - 8.0f);
-        if (ImGui::BeginChild("##packet-editor", {-1.0f, editorHeight}, ImGuiChildFlags_Borders))
+        if (ImGui::BeginChild("##packet-editor", {0.0f, panelHeight}, ImGuiChildFlags_Borders))
             DrawPacketEditor();
         ImGui::EndChild();
-        ImGui::Spacing();
-        DrawComposer();
         ImGui::EndTable();
     }
+    DrawComposer(composerHeight);
     ImGui::EndPopup();
     ImGui::PopStyleVar(2);
 }

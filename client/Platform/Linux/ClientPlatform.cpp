@@ -10,6 +10,39 @@
 #include <memory>
 #include <mdr/Protocol.hpp>
 #include <mdr-bt/ConnectionLinux.h>
+#include <SDL3/SDL_events.h>
+#include <SDL3/SDL_video.h>
+
+int clientPlatformSaveBlob(
+    const char* filename, const unsigned char* data, size_t dataSize, const char* mimeType,
+    SDL_Window* window, ClientPlatformSaveBlobCallback callback, void* userdata)
+{
+    return clientSDLSaveBlob(filename, data, dataSize, mimeType, window, callback, userdata);
+}
+
+float clientPlatformGetDisplayScale()
+{
+    const float scale = SDL_GetDisplayContentScale(SDL_GetPrimaryDisplay());
+    return scale > 0.0f ? scale : 1.0f;
+}
+
+bool clientPlatformInitGraphics(SDL_Renderer* renderer)
+{
+    if (renderer)
+        return true;
+
+    return SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 0) && SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 0);
+}
+
+bool clientPlatformInit()
+{
+    return true;
+}
+
+bool clientPlatformWaitEventTimeout(int timeoutMS)
+{
+    return SDL_WaitEventTimeout(nullptr, timeoutMS);
+}
 
 namespace
 {

@@ -15,11 +15,10 @@
 
 #include <fmt/format.h>
 
-#define MDR_LOG_STREAM stderr
 #if defined(MDR_ENABLE_LOG) && MDR_ENABLE_LOG
 #define MDR_LOG(str, ...)                                                                                              \
     {                                                                                                                  \
-        fprintf(MDR_LOG_STREAM, "%s\n", mdr::Format((str)__VA_OPT__(, ) __VA_ARGS__).c_str());                         \
+        fprintf(stderr, "%s\n", mdr::Format((str)__VA_OPT__(, ) __VA_ARGS__).c_str());                         \
     }
 #else
 #define MDR_LOG(str, ...) {}
@@ -96,22 +95,22 @@ namespace mdr
 
     struct Int24BE
     {
-        uint8_t low;
-        uint8_t mid;
         uint8_t high;
+        uint8_t mid;
+        uint8_t low;
 
-        Int24BE() : low(0), mid(0), high(0) {}
+        Int24BE() : high(0), mid(0), low(0) {}
 
 
         Int24BE(int32_t v) { this->operator=(v); }
 
-        operator int32_t() const { return low << 16u | mid << 8u | high; }
+        operator int32_t() const { return high << 16u | mid << 8u | low; }
 
         Int24BE& operator=(int32_t v)
         {
-            high = v & 0xFF;
+            high = (v >> 16) & 0xFF;
             mid = (v >> 8) & 0xFF;
-            low = (v >> 16) & 0xFF;
+            low = v & 0xFF;
             return *this;
         }
     };
@@ -226,7 +225,7 @@ namespace mdr
     };
 
     /**
-     * @breif `noexcept` Allocator for STL containers, simply wraps @ref malloc and @ref free.
+     * @brief `noexcept` Allocator for STL containers, simply wraps @ref malloc and @ref free.
      * @note  Terminates on OOM, etc., instead of throwing an exception.
      */
     template <typename T = void>
@@ -252,10 +251,10 @@ namespace mdr
             MDR_CHECK(p != nullptr && "OOM");
             return p;
         }
-        void deallocate(pointer p, size_type n) noexcept { deallocate(p); }
+        void deallocate(pointer p, size_type) noexcept { deallocate(p); }
         void deallocate(pointer p) noexcept { std::free(p); }
-        friend bool operator==(const MDRAllocator& lhs, const MDRAllocator& rhs) noexcept { return true; }
-        friend bool operator!=(const MDRAllocator& lhs, const MDRAllocator& rhs) noexcept { return false; }
+        friend bool operator==(const MDRAllocator&, const MDRAllocator&) noexcept { return true; }
+        friend bool operator!=(const MDRAllocator&, const MDRAllocator&) noexcept { return false; }
         struct Deleter
         {
             void operator()(T* ptr) noexcept
@@ -289,22 +288,22 @@ namespace mdr
         deleter(obj);
     }
     /**
-     * @breif Alias for std::array. This MAY map to any specific protocol type directly as a POD type.
+     * @brief Alias for std::array. This MAY map to any specific protocol type directly as a POD type.
      */
     template <typename T, size_t Size>
     using Array = std::array<T, Size>;
     /**
-     * @breif Alias for std::pair. This does not map to any specific protocol type directly.
+     * @brief Alias for std::pair. This does not map to any specific protocol type directly.
      */
     template <typename A, typename B>
     using Pair = std::pair<A, B>;
     /**
-     * @breif Alias for std::tuple. This does not map to any specific protocol type directly.
+     * @brief Alias for std::tuple. This does not map to any specific protocol type directly.
      */
     template <typename... Args>
     using Tuple = std::tuple<Args...>;
     /**
-     * @breif Alias for std::string. This does not map to any specific protocol type directly.
+     * @brief Alias for std::string. This does not map to any specific protocol type directly.
      */
     using String = std::basic_string<char, std::char_traits<char>, MDRAllocator<char>>;
     /**
@@ -319,12 +318,12 @@ namespace mdr
         return String(buffer.data(), buffer.size());
     }
     /**
-     * @breif Alias for std::vector. This does not map to any specific protocol type directly.
+     * @brief Alias for std::vector. This does not map to any specific protocol type directly.
      */
     template <typename T>
     using Vector = std::vector<T, MDRAllocator<T>>;
     /**
-     * @breif Alias for std::deque. This does not map to any specific protocol type directly.
+     * @brief Alias for std::deque. This does not map to any specific protocol type directly.
      */
     template <typename T>
     using Deque = std::deque<T, MDRAllocator<T>>;
@@ -357,9 +356,8 @@ namespace mdr
             for (UInt8 i = 0; i < count; ++i)
             {
                 Entry entry{};
-                const size_t remaining = maxSize - (*ppSrcBuffer - start);
-                MDR_TRY_SIZE(size_t, MDRPod::Read(ppSrcBuffer, entry.key, remaining));
-                MDR_TRY_SIZE(size_t, MDRPod::Read(ppSrcBuffer, entry.value, maxSize - (*ppSrcBuffer - start)));
+                MDR_TRY_SIZE(size_t, MDRPod::Read(ppSrcBuffer, entry.key, maxSize));
+                MDR_TRY_SIZE(size_t, MDRPod::Read(ppSrcBuffer, entry.value, maxSize));
                 out.entries.push_back(entry);
             }
             return MDRResult<size_t>::Success(*ppSrcBuffer - start);
@@ -374,8 +372,8 @@ namespace mdr
             MDR_TRY_SIZE(size_t, MDRPod::Write(count, ppDstBuffer, maxSize));
             for (const Entry& entry : data.entries)
             {
-                MDR_TRY_SIZE(size_t, MDRPod::Write(entry.key, ppDstBuffer, maxSize - (*ppDstBuffer - start)));
-                MDR_TRY_SIZE(size_t, MDRPod::Write(entry.value, ppDstBuffer, maxSize - (*ppDstBuffer - start)));
+                MDR_TRY_SIZE(size_t, MDRPod::Write(entry.key, ppDstBuffer, maxSize));
+                MDR_TRY_SIZE(size_t, MDRPod::Write(entry.value, ppDstBuffer, maxSize));
             }
             return MDRResult<size_t>::Success(*ppDstBuffer - start);
         }

@@ -8,10 +8,10 @@ namespace mdr
     int HandleSupportFunctionT1(MDRHeadphones* self, Span<const UInt8> cmd)
     {
         Deserialize(ConnectRetSupportFunction, res, cmd);
-        std::ranges::fill(self->mDetailsV2.mSupport.table1Functions, false);
+        std::fill(self->mDetailsV2.mSupport.table1Functions.begin(), self->mDetailsV2.mSupport.table1Functions.end(), false);
         for (auto fun : res.supportFunctions)
             self->mDetailsV2.mSupport.table1Functions[static_cast<UInt8>(fun.functionType)] = true;
-        self->mDetailsV2.mSupport.provenance = DetailsV2::SupportStates::Provenance::ADVERTISED;
+        self->mDetailsV2.mSupport.state = DetailsV2::SupportStates::ADVERTISED;
         self->Awake(MDRHeadphones::AWAIT_SUPPORT_FUNCTION);
         return MDR_EVENT_IDENTITY_CHANGED;
     }
@@ -230,7 +230,7 @@ namespace mdr
                     Deserialize(PowerRetStatusBattery, res, cmd);
                     self->mDetailsV2.mBatteryL = {res.batteryLevel, 0xFF, res.chargingStatus};
                 }
-                return MDR_EVENT_BATTERY_CHANGED;
+                return self->Sync(MDR_HEADPHONES_SYNC_BATTERY, MDR_EVENT_BATTERY_CHANGED);
             }
             break;
         }
@@ -250,7 +250,7 @@ namespace mdr
                     self->mDetailsV2.mBatteryL = {res.leftBatteryLevel, 0xFF, res.leftChargingStatus};
                     self->mDetailsV2.mBatteryR = {res.rightBatteryLevel, 0xFF, res.rightChargingStatus};
                 }
-                return MDR_EVENT_BATTERY_CHANGED;
+                return self->Sync(MDR_HEADPHONES_SYNC_BATTERY, MDR_EVENT_BATTERY_CHANGED);
             }
             break;
         }
@@ -268,7 +268,7 @@ namespace mdr
                     Deserialize(PowerRetStatusCradleBattery, res, cmd);
                     self->mDetailsV2.mBatteryCase = {res.batteryLevel, 0xFF, res.chargingStatus};
                 }
-                return MDR_EVENT_BATTERY_CHANGED;
+                return self->Sync(MDR_HEADPHONES_SYNC_BATTERY, MDR_EVENT_BATTERY_CHANGED);
             }
             break;
         }
@@ -286,7 +286,7 @@ namespace mdr
                     Deserialize(PowerRetStatusBatteryThreshold, res, cmd);
                     self->mDetailsV2.mBatteryL = {res.value1, res.batteryThreshold, res.batteryChargingStatus};
                 }
-                return MDR_EVENT_BATTERY_CHANGED;
+                return self->Sync(MDR_HEADPHONES_SYNC_BATTERY, MDR_EVENT_BATTERY_CHANGED);
             }
             break;
         }
@@ -306,7 +306,7 @@ namespace mdr
                     self->mDetailsV2.mBatteryL = {res.leftBatteryLevel, res.leftBatteryThreshold, res.leftChargingStatus};
                     self->mDetailsV2.mBatteryR = {res.rightBatteryLevel, res.rightBatteryThreshold, res.rightChargingStatus};
                 }
-                return MDR_EVENT_BATTERY_CHANGED;
+                return self->Sync(MDR_HEADPHONES_SYNC_BATTERY, MDR_EVENT_BATTERY_CHANGED);
             }
             break;
         }
@@ -324,7 +324,7 @@ namespace mdr
                     Deserialize(PowerRetStatusCradleBatteryThreshold, res, cmd);
                     self->mDetailsV2.mBatteryCase = {res.value1, res.batteryThreshold, res.batteryChargingStatus};
                 }
-                return MDR_EVENT_BATTERY_CHANGED;
+                return self->Sync(MDR_HEADPHONES_SYNC_BATTERY, MDR_EVENT_BATTERY_CHANGED);
             }
             break;
         }
@@ -358,7 +358,7 @@ namespace mdr
                 self->mDetailsV2.mPlayTrackAlbum = res.playbackNames.value[1].name.value;
                 self->mDetailsV2.mPlayTrackArtist = res.playbackNames.value[2].name.value;
             }
-            return MDR_EVENT_PLAYBACK_CHANGED;
+            return self->Sync(MDR_HEADPHONES_SYNC_PLAYBACK, MDR_EVENT_PLAYBACK_CHANGED);
         }
         case MUSIC_VOLUME:
         {
@@ -1047,6 +1047,7 @@ namespace mdr
                 case POSITIVE_NEGATIVE:
                 {
                     self->mDetailsV2.mLastAlertMessage = res.messageType;
+                    ++self->mDetailsV2.mAlertSerial;
                     self->mDetailsV2.mAlertAwaitingResponse = true;
                     return MDR_EVENT_ALERT;
                 }
@@ -1082,7 +1083,7 @@ namespace mdr
             // The device never pushes WEARING_STATUS_CHECKER on its own, but it does log the
             // sensor transitions here; a sync re-reads the status.
             if (res.operationKey.value == "unitRemove" || res.operationKey.value == "unitWear")
-                return MDR_EVENT_NEED_SYNC;
+                return self->Desync(MDR_HEADPHONES_SYNC_WEARING_STATUS);
             return MDR_EVENT_INTERACTION;
         }
         default:

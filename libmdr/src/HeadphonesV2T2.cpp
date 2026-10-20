@@ -17,10 +17,10 @@ namespace mdr
     int HandleSupportFunctionT2(MDRHeadphones* self, Span<const UInt8> cmd)
     {
         Deserialize(ConnectRetSupportFunction, res, cmd);
-        std::ranges::fill(self->mDetailsV2.mSupport.table2Functions, false);
+        std::fill(self->mDetailsV2.mSupport.table2Functions.begin(), self->mDetailsV2.mSupport.table2Functions.end(), false);
         for (auto fun : res.supportFunctions)
             self->mDetailsV2.mSupport.table2Functions[static_cast<UInt8>(fun.functionType)] = true;
-        self->mDetailsV2.mSupport.provenance = DetailsV2::SupportStates::Provenance::ADVERTISED;
+        self->mDetailsV2.mSupport.state = DetailsV2::SupportStates::ADVERTISED;
         self->Awake(MDRHeadphones::AWAIT_SUPPORT_FUNCTION);
         return MDR_EVENT_IDENTITY_CHANGED;
     }
@@ -220,7 +220,7 @@ namespace mdr
         case SAFE_LISTENING_TWS_2:
         {
             Deserialize(SafeListeningNotifyParamSL, res, cmd);
-            self->mDetailsV2.mSafeListeningPreviewMode.overwrite(res.safeListeningMode == OnOffSettingValue::ON);
+            self->mDetailsV2.mSafeListeningPreviewMode.overwrite(res.previewMode == OnOffSettingValue::ON);
             return MDR_EVENT_SAFE_LISTENING_CHANGED;
         }
         default:
@@ -233,7 +233,7 @@ namespace mdr
     {
         Deserialize(SafeListeningRetExtendedParam, res, cmd);
         self->mDetailsV2.mSafeListeningSoundPressure = res.levelPerPeriod;
-        return MDR_EVENT_SAFE_LISTENING_CHANGED;
+        return self->Sync(MDR_HEADPHONES_SYNC_SAFE_LISTENING, MDR_EVENT_SAFE_LISTENING_CHANGED);
     }
 
     int HandleSystemStatusT2(MDRHeadphones* self, Span<const UInt8> cmd)
@@ -259,7 +259,7 @@ namespace mdr
                 status = res.status;
             }
             self->mDetailsV2.mWearingStatus = status;
-            return MDR_EVENT_WEARING_STATUS_CHANGED;
+            return self->Sync(MDR_HEADPHONES_SYNC_WEARING_STATUS, MDR_EVENT_WEARING_STATUS_CHANGED);
         }
         default: break;
         }

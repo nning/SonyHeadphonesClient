@@ -4,10 +4,12 @@ AST walker and codegen for `libmdr` - with extra helper utilities.
 
 ## Running codegen
 
+Codegen is disabled by default. Configure with `-DMDR_BUILD_CODEGEN=ON` after [setting up LLVM](#setting-up-llvm).
+
 Codegen is a proper CMake dependency. Modify a source header and re-run:
 
 ```sh
-cmake --build <build-dir> --target codegen
+cmake --build <build-dir> --target mdr_codegen
 ```
 
 This rebuilds only the stale tools and regenerates only the affected files.
@@ -35,6 +37,20 @@ Install `llvm` from Homebrew — CMake will locate it automatically.
 device names and addresses, track metadata - with same-length placeholders, so
 a capture can be contributed as a test fixture. See
 [Contributing to Tests](../tests/README.md#scrub-personal-data).
+
+## Client icon
+
+`make-icon.py` regenerates every platform's icon from
+[`client/Platform/AppIcon.png`](../client/Platform/AppIcon.png). Replace that
+file, then run `python tooling/make-icon.py` (requires `pip install pillow`)
+and commit the outputs.
+
+## README title
+
+`make-title-svg.py` regenerates [`docs/title.svg`](../docs/title.svg)
+with the client icon embedded as a bitmap and the title converted to outlines.
+Run `python tooling/make-title-svg.py` (requires `pip install fonttools`) and
+commit the output.
 
 ## Credits
 

@@ -2,13 +2,12 @@
 
 #include <SDL3/SDL_filesystem.h>
 #include <SDL3/SDL_iostream.h>
-#include <SDL3/SDL_log.h>
+#include <SDL3/SDL_time.h>
 #include <mdr/Command.hpp>
 #include <mdr/ProtocolV2T1.hpp>
 #include <mdr/ProtocolV2T2.hpp>
 
 #include <atomic>
-#include <chrono>
 #include <string_view>
 
 namespace
@@ -92,11 +91,16 @@ namespace
             ) == mdr::MDRUnpackResult::OK;
         const mdr::UInt8 command =
             unpacked && !payload.empty() ? payload.front() : 0;
-        const auto timestamp = std::chrono::duration_cast<
-            std::chrono::milliseconds
-        >(
-            std::chrono::system_clock::now().time_since_epoch()
-        ).count();
+        SDL_Time now{};
+        if (!SDL_GetCurrentTime(&now))
+        {
+            MDR_LOG(
+                "Unable to timestamp payload capture: {}",
+                SDL_GetError()
+            );
+            return;
+        }
+        const int64_t timestamp = now / 1'000'000;
         const uint64_t counter = gCaptureCounter.fetch_add(
             1, std::memory_order_relaxed
         );
@@ -122,9 +126,8 @@ namespace
         SDL_IOStream* output = SDL_IOFromFile(path.c_str(), "wb");
         if (!output)
         {
-            SDL_LogError(
-                SDL_LOG_CATEGORY_APPLICATION,
-                "Unable to open payload capture %s: %s",
+            MDR_LOG(
+                "Unable to open payload capture {}: {}",
                 path.c_str(),
                 SDL_GetError()
             );
@@ -136,9 +139,8 @@ namespace
         const bool closed = SDL_CloseIO(output);
         if (written != static_cast<size_t>(frameSize) || !closed)
         {
-            SDL_LogError(
-                SDL_LOG_CATEGORY_APPLICATION,
-                "Unable to write payload capture %s: %s",
+            MDR_LOG(
+                "Unable to write payload capture {}: {}",
                 path.c_str(),
                 SDL_GetError()
             );

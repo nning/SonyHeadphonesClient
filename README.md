@@ -3,7 +3,7 @@ SonyHeadphonesClient
 
 A spiritual successor to [Plutoberth's original SonyHeadphonesClient](https://github.com/Plutoberth/SonyHeadphonesClient) - now with standardized support for newer devices and more platforms.
 
-There's no release build yet - but you can always grab the latest [nightly builds](https://nightly.link/mos9527/SonyHeadphonesClient/workflows/cmake/v1-compat?preview), or use the [Web Version](#running-on-the-web).
+There's no [Release](https://github.com/mos9527/SonyHeadphonesClient/releases) build for this branch yet - but you can always grab the latest [nightly builds](https://nightly.link/mos9527/SonyHeadphonesClient/workflows/cmake/v1-compat?preview), or use the [Web Version](#running-on-the-web).
 
 [![Build](https://github.com/mos9527/sonyheadphonesclient/actions/workflows/cmake.yml/badge.svg)](https://github.com/mos9527/SonyHeadphonesClient/actions/workflows/cmake.yml)
 [![Nightly Builds](https://img.shields.io/badge/v1compat-builds-cyan)](https://nightly.link/mos9527/SonyHeadphonesClient/workflows/cmake/v1-compat?preview)
@@ -18,14 +18,19 @@ This branch is expected to be merged/released once the following features have b
 
 ## Compatibility
 
-The following platforms (applies to `libmdr`, `client`) are *natively* supported with first-party effort.
+The following platforms (applies to `libmdr-bt`, `client`; `libmdr` itself is platform agnostic) are *natively* supported with first-party effort.
+
+The architectures (x64, etc) shown here are the ones built by GitHub Actions, and are available in [nightly builds](https://nightly.link/mos9527/SonyHeadphonesClient/workflows/cmake/v1-compat?preview).
 
 | Platform         | Support Status | Maintainers          |
 |------------------|----------------|----------------------|
-| Windows          | Full Support   | [@mos9527](https://github.com/mos9527), [@Amrsatrio](https://github.com/Amrsatrio) |
-| Linux            | Full Support   | [@mos9527](https://github.com/mos9527)             |
-| macOS            | Full Support   | [@mos9527](https://github.com/mos9527)             |
-| Web (Emscripten) | Full Support   | [@mos9527](https://github.com/mos9527)             |
+| Windows (`x86/x64/ARM64`, [Windows XP SP2](#running-compatibility-builds) and up) | Full Support   | [@mos9527](https://github.com/mos9527), [@Amrsatrio](https://github.com/Amrsatrio) |
+| Linux  (`x86/x64/ARMv7/ARM64`)          | Full Support   | [@mos9527](https://github.com/mos9527)             |
+| macOS   (Universal)       | Full Support   | [@mos9527](https://github.com/mos9527)             |
+| iOS (`ARM64`, [15.0+](https://github.com/mos9527/SonyHeadphonesClient/pull/70))           | Full Support, [manual build/install required](./DEVELOPER.md#ios-xcode)   | [@mos9527](https://github.com/mos9527)             |
+| Android (`ARMv7/ARM64`, [5.0+](https://github.com/mos9527/SonyHeadphonesClient/pull/69)) | Supported, `client` only | [@mos9527](https://github.com/mos9527)             |
+| Web (`WASM32`, Emscripten) | Full Support   | [@mos9527](https://github.com/mos9527)             |
+| HarmonyOS (`ARM64`, [OpenHarmony](https://github.com/mos9527/SonyHeadphonesClient/pull/68)) | Supported, `client` only, [manual build required](./DEVELOPER.md#openharmony-deveco-studio) | [@mos9527](https://github.com/mos9527)             |
 
 For device support, refer to [`docs/device-support`](./docs/device-support/). If the feature support status for your own device is missing/incorrect/untested there, feel free to submit an [Issue](https://github.com/mos9527/SonyHeadphonesClient/issues/new) so we can work on it!
 
@@ -35,16 +40,32 @@ The client app is available as a Progressive Web App (PWA) with full UI/feature 
 
 **Live version is available** at: https://mos9527.com/SonyHeadphonesClient/
 
-A [Web Serial](https://caniuse.com/wf-serial)-supporting browser is required. You can expect the app to work on:
+A [Web Serial](https://caniuse.com/web-serial)-supporting browser is required. You can expect the app to work on:
 - Desktop Chrome (89+), and Chromium derivatives (also 89+, e.g. Edge, Opera)
 - [Android Chrome (148+)](https://chromestatus.com/feature/6043992171085824)
 - [Desktop Firefox (151+)](https://hacks.mozilla.org/2026/05/web-serial-support-in-firefox/)
+
+## Running Compatibility Builds
+
+Compatibility builds are offered for certain platforms, where limited sets of features are made available to make it run there. These builds are suffixed with `-compatibility`, and are available in [nightly](https://nightly.link/mos9527/SonyHeadphonesClient/workflows/cmake/v1-compat?preview) and [Releases (TBD)](https://github.com/mos9527/SonyHeadphonesClient/releases).
+
+Currently, the following compatibility builds are available.
+
+### Windows Compatibility Builds
+
+Available as `SonyHeadphonesClient-win-x64-compatibility.exe` and `SonyHeadphonesClient-win-x86-compatibility.exe` in the CI. See [SHC Developer's Guide](./DEVELOPER.md#windows) for build flags.
+
+These builds lower the minimal required Windows version from Windows 8.1 in the regular builds to Windows XP SP2.
+
+- This build has no Bluetooth LE support, which is only introduced in [Windows 8.1 and above](https://learn.microsoft.com/en-us/windows-hardware/drivers/bluetooth/bluetooth-support-in-previous-windows-versions).  
+- Threading is disabled in this build, see [e636d54](https://github.com/mos9527/SonyHeadphonesClient/commit/e636d54f039e85d9d915b0dc050968ffc18e25b6).
+- [YY-Thunks](https://github.com/Chuyu-Team/YY-Thunks) is used to provide compatibility for Windows XP. Otherwise this would've been limited for Windows 7 and above.
 
 ## Fonts & Localization
 
 The Client app uses your system's locale settings to select its application locale (`AppLocale`) and the default font your OS provides.
 
-Locale can overridden by using `--locale <locale>`.
+Locale can be overridden by using `--locale <locale>`.
 - For the Web version, this can be manually specified in the URL via `...?locale=jp`, e.g. `https://mos9527.com/SonyHeadphonesClient/?locale=jp`.
 
 The following locales are supported:

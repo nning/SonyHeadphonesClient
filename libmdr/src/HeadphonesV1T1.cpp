@@ -11,10 +11,10 @@ namespace mdr
         int HandleSupport(MDRHeadphones* self, Span<const UInt8> cmd)
         {
             Deserialize(RetSupportFunction, result, cmd);
-            std::ranges::fill(self->mDetailsV1.mSupport.functions, false);
+            std::fill(self->mDetailsV1.mSupport.functions.begin(), self->mDetailsV1.mSupport.functions.end(), false);
             for (const FunctionType function : result.supportFunctions)
                 self->mDetailsV1.mSupport.functions[static_cast<UInt8>(function)] = true;
-            self->mDetailsV1.mSupport.provenance = DetailsV1::SupportStates::Provenance::ADVERTISED;
+            self->mDetailsV1.mSupport.provenance = DetailsV1::SupportStates::state::ADVERTISED;
             self->RefreshSupportV1();
             self->Awake(MDRHeadphones::AWAIT_SUPPORT_FUNCTION);
             return MDR_EVENT_IDENTITY_CHANGED;
@@ -72,7 +72,7 @@ namespace mdr
                     Deserialize(RetBatteryLevelBatteryParam, result, cmd);
                     self->mDetailsV1.mBatteryL = {result.level, 0xFF, result.chargingStatus};
                 }
-                return MDR_EVENT_BATTERY_CHANGED;
+                return self->Sync(MDR_HEADPHONES_SYNC_BATTERY, MDR_EVENT_BATTERY_CHANGED);
             default:
                 return MDR_EVENT_UNHANDLED;
             }
@@ -125,7 +125,7 @@ namespace mdr
                 {
                     // V1 NTFY payloads doesn't contain the actual NameData...
                     // Need a GET to get the actual ones, have the caller to sync.
-                    return MDR_EVENT_NEED_SYNC;
+                    return self->Desync(MDR_HEADPHONES_SYNC_PLAYBACK);
                 }
                 else
                 {
@@ -138,7 +138,7 @@ namespace mdr
                     self->mDetailsV1.mPlayTrackAlbum = std::move(value);
                 else
                     self->mDetailsV1.mPlayTrackArtist = std::move(value);
-                return MDR_EVENT_PLAYBACK_CHANGED;
+                return self->Sync(MDR_HEADPHONES_SYNC_PLAYBACK, MDR_EVENT_PLAYBACK_CHANGED);
             }
             return MDR_EVENT_UNHANDLED;
         }
@@ -474,6 +474,7 @@ namespace mdr
                 case POSITIVE_NEGATIVE:
                 {
                     self->mDetailsV1.mLastAlertMessage = res.messageType;
+                    ++self->mDetailsV1.mAlertSerial;
                     self->mDetailsV1.mAlertAwaitingResponse = true;
                     return MDR_EVENT_ALERT;
                 }

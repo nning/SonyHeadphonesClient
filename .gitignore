@@ -550,3 +550,14 @@ tooling/ida/input/
 *.til
 
 build-*/
+
+/client/Platform/OpenHarmony/.hvigor/
+/client/Platform/OpenHarmony/.appanalyzer/
+/client/Platform/OpenHarmony/oh_modules/
+/client/Platform/OpenHarmony/entry/oh_modules/
+/client/Platform/OpenHarmony/entry/.cxx/
+/client/Platform/OpenHarmony/local.properties
+
+/client/Platform/Android/.gradle/
+/client/Platform/Android/app/.cxx/
+/client/Platform/Android/local.properties

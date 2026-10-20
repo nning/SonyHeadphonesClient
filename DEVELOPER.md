@@ -8,20 +8,30 @@ It's recommended that you read [CONTRIBUTING.md](./.github/CONTRIBUTING.md) firs
 
 A C++20 compliant compiler and CMake 3.31+ are required. GCC 14, Clang 21 and MSVC 19 have been used for development and are guaranteed to be supported.
 
-Third-party dependencies (see [`contrib`](./contrib/)) are managed by CMake's `FetchContent` and are always statically linked.
+**Third-party dependencies** (see [`contrib`](./contrib/)) are managed by CMake's `FetchContent` and are always statically linked.
 
-**Codegen:** `MDR_ENABLE_CODEGEN` is `ON` by default and requires LLVM/libclang - configuration fails if it cannot be found. See [tooling](./tooling/README.md#setting-up-llvm) for setting up LLVM, or pass `-DMDR_ENABLE_CODEGEN=OFF` to build with the checked-in generated sources.
+**OS-level dependencies** beyond C/C++ runtime are required **for and only for** `libmdr-bt` and `client` targets. Other build targets are always platform-agnostic (including `libmdr`).
 
 ### Desktop (Windows, macOS, Linux)
 
-#### Linux Dependencies
+For these platforms, you can build SHC with relative ease using CMake. Check out the official [Getting Started with CMake](https://cmake.org/cmake/help/latest/guide/tutorial/Getting%20Started%20with%20CMake.html#build-and-run) guide if you're unfamiliar with the process!
+
+#### Windows
+
+Only the latest Windows SDK is guaranteed to be supported. Do note that we build for much, much older Windows too! Check out [Compatibility Builds](./README.md#windows-compatibility-builds) and [Example Build Flags](#example-configurations) for more info. 
+
+And yes, you do that with the latest toolchains.
+
+#### macOS
+
+Xcode (14.0+) is required for C++20 support.
+
+#### Linux
 
 You need DBus, BlueZ and Fontconfig development packages installed.
 - Debian (Ubuntu): `sudo apt install libbluetooth-dev libdbus-1-dev libfontconfig1-dev`
 - Fedora: `sudo dnf install bluez-libs-devel dbus-devel fontconfig-devel`
 - Arch Linux: `sudo pacman -S bluez dbus fontconfig`
-
-You may also want `bluez-tools`/`bluez-utils` installed for testing.
 
 #### Example
 
@@ -34,49 +44,156 @@ cmake --build . --target SonyHeadphonesClient
 
 ### Web (Emscripten)
 
-- Install the SDK with `emsdk` and verify your installation - https://emscripten.org/docs/getting_started/downloads.html
+Install the Emscripten SDK with `emsdk` or other means (e.g. `winget`, `brew`...) and verify your installation - https://emscripten.org/docs/getting_started/downloads.html
+
 - Run `emcmake cmake ...` in place of configuration.
   - Or, set up CMake Toolchain variables manually, e.g.
     ```
     -DCMAKE_TOOLCHAIN_FILE=/usr/lib/emsdk/upstream/emscripten/cmake/Modules/Platform/Emscripten.cmake -DCMAKE_CROSSCOMPILING_EMULATOR=/usr/lib/emsdk/node/20.18.0_64bit/bin/node
     ```
+  - You can also do this in your IDEs to build Emscripten targets directly in situ.
 - No extra dependencies are required.
-- Shared libraries are unavailable on Emscripten, so `MDR_BUILD_SHARED` defaults to `OFF` and the tests must be disabled with `-DBUILD_TESTING=OFF`.
+- Shared libraries are unavailable on Emscripten, so `MDR_BUILD_SHARED` defaults to `OFF` and the tests **must** be disabled with `-DMDR_BUILD_TESTING=OFF`.
 
 #### Example
 
 ```bash
 mkdir build
 cd build
-emcmake cmake .. -DBUILD_TESTING=OFF
+emcmake cmake .. -DMDR_BUILD_CODEGEN=OFF -DMDR_BUILD_TESTING=OFF
 cmake --build . --target SonyHeadphonesClient
 ```
 
 Run the generated page with `emrun client/index.html` - or host it with any static HTTP server.
 
-#### IntelliJ CLion/Rider
 
-Set up the CMake Toolchain variables above in a new CMake Profile (in CMake options). You can then build from there, and serve the static content within `<build directory>/client/` with any static HTTP server.
+### Android (Android Studio)
+
+Open `client/Platform/Android` in Android Studio. Relatively new Android SDK, NDK, and CMake should be installed through the Android Studio SDK Manager.
+
+The app targets Android 5.0 (API 21) and later, and by default builds for ARMv7 and ARM64 architectures.
+ 
+**NOTE:** As the Bluetooth functions are only provided via Java/JNI, there's no dedicated `libmdr-bt` backend support, and it's only implemented in the `client`.
+
+**NOTE:** The [Protocol Debugger](#the-protocol-debugger) is available, and packet export is implemented via [Android Sharesheet](https://developer.android.com/develop/ui/compose/sharing/send#using-android-system-sharesheet)
+
+### OpenHarmony (DevEco Studio)
+
+Open `client/Platform/OpenHarmony` in [DevEco Studio](https://developer.huawei.com/consumer/cn/deveco-studio/). OpenHarmony SDK API Version 20 (6.0) or later is required.
+
+[Signing](https://developer.huawei.com/consumer/cn/doc/doccenter-deveco-studio/ide-signing) is required for this to run on an actual device.
+
+#### Documentation
+
+Once you have DevEco installed, you can find all you need *locally* in (change your path accordingly):
+- `C:\Program Files\Huawei\DevEco Studio\plugins\openharmony\ohos-info-center-view` 
+
+For more information, these links will also help:
+- [开发者文档中心 - 华为HarmonyOS开发者](https://developer.huawei.com/consumer/cn/doc/doccenter)
+- [Document Center - HUAWEI Developers](https://developer.huawei.com/consumer/cn/doc/doccenter)
+- [libsdl-org/SDL/docs/README-harmonyos.md](https://github.com/libsdl-org/SDL/blob/main/docs/README-harmonyos.md) by [@icculus](https://github.com/icculus)
+
+**NOTE:** As the Bluetooth functions are only provided via `ArkTS` interop, there's no dedicated `libmdr-bt` backend support, and it's only implemented in the `client`.
+
+**NOTE:** The [Protocol Debugger](#the-protocol-debugger) exports packets and ZIP archives through the HarmonyOS system share panel (`Share Kit`), including its **Save as file** action.
+
+### iOS (Xcode)
+
+Xcode (15.0+) and an Apple ID are required. You can generate an Xcode project from CMake:
+
+```bash
+cmake -B build-ios -G Xcode -DCMAKE_SYSTEM_NAME=iOS \
+      -DMDR_BUILD_CODEGEN=OFF -DMDR_BUILD_TESTING=OFF -DMDR_BUILD_SHARED=OFF \
+      -DCMAKE_OSX_DEPLOYMENT_TARGET=15.0 \
+      -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGN_STYLE="Automatic" # If you have a team ID, use `-DCMAKE_XCODE_ATTRIBUTE_DEVELOPMENT_TEAM=<TEAM_ID>` instead.
+# Open the generated project 
+open build-ios/SonyHeadphonesClient.xcodeproj
+```
+
+Signing in Xcode is required. You may want to configure **Signing & Capabilities** for the `SonyHeadphonesClient` target first to a valid one, or preconfigure it in the aforementioned CMake commandline.
+
+#### Installing Unsigned IPAs
+
+The CI builds are unsigned (see the [main README](./README.md) for download), and must be re-signed before they can be installed on a device. Any IPA sideloading tool that signs with your own Apple ID works, e.g. [Sideloadly](https://sideloadly.io/), [AltStore](https://altstore.io/) or [SideStore](https://sidestore.io/).
+
+- With a free Apple ID, the signature expires after 7 days and the app has to be re-signed (AltStore/SideStore can refresh it automatically).
+- On iOS 16 and later, *Developer Mode* must be enabled (*Settings > Privacy & Security > Developer Mode*) before a development-signed app will launch.
+- If signing fails because the bundle identifier is already taken, change it in your sideloading tool.
+
+**NOTE:** Only Bluetooth Classic devices are supported, through the External Accessory (iAP2) protocols `jp.co.sony.songpal.mdr.link` (V1) and `jp.co.sony.songpal.mdr.link2` (V2). Apps using `libmdr-bt` must declare both in `UISupportedExternalAccessoryProtocols`; see [`Info.plist`](./client/Platform/iOS/Info.plist).
+
+**NOTE:** Only one app can hold an accessory session at a time. Quit Sound Connect before connecting.
+
+**NOTE:** Device addresses are derived from the accessory's model and serial numbers, and are not Bluetooth MAC addresses.
+
+**NOTE:** App Store (and possibly external TestFlight) distribution of External Accessory apps requires the accessory manufacturer to whitelist the app. Use development signing or TestFlight internal testing.
+
+**NOTE:** The [Protocol Debugger](#the-protocol-debugger) exports packets and ZIP archives through [`UIActivityViewController`](https://developer.apple.com/documentation/uikit/uiactivityviewcontroller), including **Save to Files** when available.
 
 ### CMake Options
 
+#### Common
+
+These apply to `libmdr`, `libmdr-bt`, their shared libraries and the `client`.
+
 | Option | Default | Description |
 | --- | --- | --- |
-| `MDR_BUILD_CLIENT` | `ON` | Build the Client app and its platform backends. |
-| `MDR_CLIENT_DEBUGGER` | `OFF` | Build the [Protocol Debugger](#the-protocol-debugger) in all configurations. Always built for `Debug` builds and multi-config generators (requires `MDR_BUILD_CLIENT`). |
+| `MDR_NO_EXCEPTIONS` | `ON` | Compile without C++ exceptions. See also [Exception Handling](#exception-handling). |
 | `MDR_DEBUG` | `OFF` | Define `MDR_DEBUG` (debug features) in all configurations. Forced `ON` for `Debug` builds; also implies `MDR_ENABLE_LOG`. |
-| `MDR_DEBUG_TRAPS` | `OFF` | Break into the debugger (`MDR_TRAP`) when MDR operations / `MDR_CHECK`s fail. `Debug` builds only. |
 | `MDR_ENABLE_LOG` | `OFF` | Enable `MDR_LOG` output and source locations in non-`Debug` builds. Always on for `Debug` builds. |
-| `MDR_NO_EXCEPTIONS` | `ON` | Compile without C++ exceptions. See [`noexcept` Container Usage](#noexcept-container-usage-libmdr-libmdr-bt-client). |
-| `MDR_BUILD_WITH_ASAN` | `OFF` | Build with AddressSanitizer. |
-| `MDR_BLE` | `ON` | Build with BLE backend support (defines `MDR_BLE`). |
-| `MDR_BUILD_SHARED` | Platform-dependent | Also build `mdr` and `mdr-bt` as shared libraries. Defaults to `ON` where shared libraries are supported (i.e. not Emscripten). Required by the tests. |
-| `MDR_ENABLE_CODEGEN` | `ON` | Enable [codegen](./tooling/) targets. Requires LLVM/libclang; configuration fails if LLVM is not found. Set to `OFF` to use the checked-in generated sources. |
-| `MDR_STATIC_CRT` | `ON` | **MSVC only.** Statically link the MSVC runtime (`/MT`). Ignored if `CMAKE_MSVC_RUNTIME_LIBRARY` is set. |
-| `MDR_DYNAMIC_UCRT` | `ON` | **MSVC only.** With `MDR_STATIC_CRT`, keep the UCRT dynamically linked in non-`Debug` builds. |
-| `BUILD_TESTING` | `ON` | Standard CTest option. Builds the C ABI and [replay tests](./tests/) (plus the debugger tests when the Protocol Debugger is built); requires `MDR_BUILD_SHARED=ON`. |
+| `MDR_DEBUG_TRAPS` | `OFF` | Define `MDR_DEBUG_TRAPS`. Break into the debugger (`MDR_TRAP`) when MDR operations / `MDR_CHECK`s fail. `Debug` builds only. |
 
-## Debugging (libmdr, libmdr-bt, client)
+#### Building
+| Option | Default | Description |
+| --- | --- | --- |
+| `MDR_BUILD_TESTING` | `ON` | Build and register the C ABI and [replay tests](./tests/) with CTest. Requires `MDR_BUILD_SHARED=ON`. |
+| `MDR_BUILD_SHARED` | Platform-dependent | Also build the `mdr_shared` target and, with `MDR_BUILD_BT=ON`, the `mdr-bt_shared` target. Outputs to `mdr-shared` and `mdr-bt-shared`. Defaults to `ON` where shared libraries are supported (i.e. **not** Emscripten). Required by the tests. |
+| `MDR_BUILD_CODEGEN` | `OFF` | Build [codegen](./tooling/) tools and targets, including `mdr_codegen` for all generated protocol and debugger files. Requires a native toolchain and LLVM/libclang. Leave `OFF` to use the checked-in generated sources. |
+| `MDR_BUILD_WITH_ASAN` | `OFF` | Build with AddressSanitizer enabled. |
+| `MDR_BUILD_WITH_IPO` | `ON` | Build with Interprocedural Optimization enabled. |
+| `MDR_MSVC_STATIC_CRT` | `ON` | **MSVC only.** Statically link the MSVC runtime (`/MT`). Ignored if `CMAKE_MSVC_RUNTIME_LIBRARY` is set. |
+| `MDR_MSVC_DYNAMIC_UCRT` | `ON` | **MSVC only.** With `MDR_MSVC_STATIC_CRT`, keep the UCRT dynamically linked in non-`Debug` builds. |
+
+#### `libmdr-bt`
+
+| Option | Default | Description |
+| --- | --- | --- |
+| `MDR_BUILD_BT` | `ON` | Build `libmdr-bt` and its platform Bluetooth backends.  |
+| `MDR_BT_BLE_SUPPORT` | `ON` | With `MDR_BUILD_BT=ON`, define `MDR_BT_BLE_SUPPORT` and build optional Bluetooth LE backends alongside Classic Bluetooth backends. |
+
+#### `client`
+
+| Option | Default | Description |
+| --- | --- | --- |
+| `MDR_BUILD_CLIENT` | `ON` | Build the Client app and its platform backends. Requires `MDR_BUILD_BT=ON`. |
+| `MDR_CLIENT_THREADED` | `ON` | Build the Client with threading support, which enables on-demand async rendering (saves power). **NOTE**: Forced `OFF` on Emscripten. |
+| `MDR_CLIENT_DEBUGGER` | `OFF` | With `MDR_BUILD_CLIENT=ON`, build, link and enable the [Protocol Debugger](#the-protocol-debugger), defining `MDR_CLIENT_DEBUGGER`, in all configurations. Always enabled in `Debug` builds. |
+| `MDR_MSVC_CLIENT_YY_THUNKS` | `OFF` | **MSVC only.** Link the Client build with [YY-Thunks](https://github.com/Chuyu-Team/YY-Thunks) for Windows  backwards compatibility.|
+
+#### Example Configurations
+
+| Configuration | Options |
+| --- | --- |
+| Client with checked-in generated sources | `MDR_BUILD_CLIENT=ON`, `MDR_BUILD_BT=ON`, `MDR_BUILD_CODEGEN=OFF` |
+| Windows compatibility client build config (Classic Bluetooth only, static CRT/UCRT linkage, threading disabled, and use YY-Thunks for API compat) | `-DMDR_BT_BLE_SUPPORT=OFF -DMDR_MSVC_STATIC_CRT=ON -DMDR_MSVC_DYNAMIC_UCRT=OFF -DMDR_CLIENT_THREADED=OFF -DMDR_MSVC_CLIENT_YY_THUNKS=ON` |
+| Protocol library without Bluetooth backends | `MDR_BUILD_CLIENT=OFF`, `MDR_BUILD_BT=OFF`, `MDR_BUILD_CODEGEN=OFF`, `MDR_BUILD_TESTING=OFF` |
+| Codegen targets only | `MDR_BUILD_CLIENT=OFF`, `MDR_BUILD_BT=OFF`, `MDR_BUILD_CODEGEN=ON`, `MDR_BUILD_TESTING=OFF`; build target `mdr_codegen` |
+
+## Debugging (client)
+
+### Logs
+
+See also [Logging - Coding Style](#logging-libmdr-libmdr-bt-client) (note this is by-default `OFF`!).
+
+Logs are written to `stderr`, and on most platforms you should see them in the terminal you launched the app from. On some platforms they are redirected to the respective log system instead:
+
+| Platform | Log System |
+| --- | --- |
+| Windows | You need `-con` to view the logs with a newly allocated console. |
+| Android | Log output is redirected to logcat, with tag `MDR`. |
+| iOS | Log output is visible in Xcode console. |
+| Web | Logs are automatically redirected to `console.log` by Emscripten. |
+| OpenHarmony | **TODO**. Logs are not currently supported! |
 
 ### The Protocol Debugger
 
@@ -86,7 +203,46 @@ The Protocol Debugger allows you to *view, replay, modify and send* manipulated 
 
 See the [Packet Capture and Test Contribution Guide](./tests/) for usage, bug reporting, and what to do when the device disconnects unexpectedly.
 
-## `noexcept` Container Usage (libmdr, libmdr-bt, client)
+## Accessing C++ Implementation Details
+
+`libmdr/src/Details.hpp` exposes the C++ object behind an opaque `MDRHeadphones*` handle. This is **unsupported**, however available for cases that need state which is not yet represented by the public C ABI.
+
+For this to work, you need to have the repository root and `libmdr/include` configured as include paths. The example below demonstrates raw MDR v2 support-table read:
+
+```c++
+#include <cstdint>
+#include "libmdr/src/Details.hpp"
+
+bool AdvertisesV2Function(const ::MDRHeadphones* headphones, unsigned table, std::uint8_t functionId)
+{
+    const auto* implementation = mdr::detail::HeadphonesImpl(headphones);
+    if (!implementation ||
+        implementation->mProtocolFamily != mdr::MDRHeadphones::ProtocolFamily::V2)
+        return false;
+
+    const auto& support = implementation->mDetailsV2.mSupport;
+    if (table == 1)
+        return support.table1Functions[functionId];
+    if (table == 2)
+        return support.table2Functions[functionId];
+    return false;
+}
+```
+
+Implementation details provide **no API or ABI stability guarantees** and may change without an `MDR_ABI_VERSION` bump. They **MUST NOT** be accessed across a shared-library boundary (DLL, `.so`, or `.dylib`), because their layouts depend on the compiler, standard library ABI, and build configuration.
+
+Use it only when:
+
+- `libmdr` is compiled and statically linked into the same binary.
+- The public C API does not yet expose the required state. Treat internal state as read-only, and consider submitting an [issue](https://github.com/mos9527/SonyHeadphonesClient/issues) so generally useful functionality can be added to the public API.
+
+## Coding Style
+
+Respect `.clang-format` and `.clang-tidy` for formatting and linting. Furthermore, the following rules always apply.
+
+### Exception Handling
+
+**C++ Exceptions are optional, and should be considered disabled by default.**
 
 SHC's user-facing components, `libmdr`, `libmdr-bt` and `client`, may be compiled w/o exception handling (on supported platforms), with respect to the `MDR_NO_EXCEPTIONS` CMake option, which is `ON` by default.
 
@@ -102,15 +258,115 @@ This in turn means that:
 
 For `tooling` and non-project specific code, there is no restriction on memory management nor exception handling.
 
-## Client Localization (client)
+### `std::ranges`, `std::views` Libraries
 
-See [Contributing to Client Localization](./client/I18N/README.md) for more info.
+**No usage whatsoever is allowed.** 
+
+- Portability is a *requirement* for SHC. Some platforms we support (e.g. older Linuxes) are stuck with [older compilers](https://cppreference.com/cpp/compiler_support) that only offered partial coverage for these libraries.
+- Furthermore, their usage *inadvertently* leads to compile-time, codegen bloat and sometimes runtime performance regressions due to excessive template instantiation, heavy header parsing, and possible runtime cost (e.g. `std::views::filter_view`) that's otherwise avoidable.
+
+Whenever you'd like to trade performance for syntactic sugar, **do not**. Stick with the standard `<algorithm>` library and for-loops that are both easier to write/comprehend and faster to compile/run.
+
+### C ABI (libmdr, libmdr-bt)
+
+`libmdr` provides stable ABI **per ABI version**. This is defined by `MDR_ABI_VERSION` in `libmdr/include/mdr-c/Base.h`.
+
+**Bump this version by `1` if you are breaking ABI**, for example:
+- *Removing* functions (note: adding new functions while adhering to the rest of the rules is allowed) in C-headers.
+- *Changing* function signatures (this includes changing the underlying structs) in C-headers.
+  
+`libmdr-bt` provides stable ABI, and is **guaranteed** to not change between `libmdr` ABI versions, with the sole exception for **adding** platform backends.
+
+- **NOTE:** `git blame` the `#define MDR_ABI_VERSION` line to see all ABI-breaking changes introduced to `libmdr`.
+
+### C ABI Design (libmdr)
+
+Properties can be **read-only**, **read-write**, or **write-only**. 
+
+**Read-only** properties should provide **only** a getter function.
+- The function signature is as follows (`MDRHeadphones*, PropertyPointer(s)...`):
+  ```c++
+  mdrHeadphonesGetEqualizerPresets(MDRHeadphones* headphones, MDREqualizerPreset* presets, uint32_t* inout_count)
+  ```
+
+For **read-write** properties, the `MDRPropertyType type` parameter selects the getter's cached view:
+- `MDR_PROPERTY_CURRENT` returns the latest device-reported value, or its default before any report. Getters do not request fresh data, and ACKs do not update ordinary property values.
+- `MDR_PROPERTY_DESIRED` preserves local edits made through `mdrHeadphonesSet...` until completion. With no outstanding local write, subsequent device reports update this view too.
+- Read-only fields in a mixed structure use the same value in both views. One-shot action fields may reset after completion.
+- `mdrHeadphonesRequestSync` refreshes only the selected `MDR_HEADPHONES_SYNC_...` flags within the protocol family's implemented synchronization subset; it is not a readback of every writable property. `mdrHeadphonesGetSync` needs to be called afterwards, and the handler themselves **MUST NOT** schedule another request.
+
+**Read-write** properties should provide **both** a getter and a setter function.
+- `MDRPropertyType type` **MUST** be the getter's **FIRST** argument after `MDRHeadphones*`. Setters do not take a view selector; they stage the desired value.
+- The getter signature is as follows (`MDRHeadphones*, MDRPropertyType, PropertyPointer(s)...`):
+```c++
+mdrHeadphonesGetPower(MDRHeadphones* headphones, MDRPropertyType type, MDRPower* out_power)
+```
+
+**Write-only** property should provide **only** a setter function.
+- For example, `mdrHeadphonesSetAlertResponse(MDRHeadphones* headphones, MDRAlertAction action)` stages an alert response without exposing a getter.
+- Like read-write setters, write-only setters stage changes, make `mdrHeadphonesIsDirty` return true, and send them only through `mdrHeadphonesRequestCommit`.
+- One-shot values such as alert responses are consumed after acknowledgement so the same action can be staged for a later request.
+
+For APIs that get/set a list of items, the function signature is as follows:
+
+```c++
+MDR_API MDRResult ...Get(MDRHeadphones* headphones, MDRPropertyType type, [Type]* data, uint32_t* inout_count);
+MDR_API MDRResult ...Set(MDRHeadphones* headphones, const [Type]* data, uint32_t count);
+```
+
+With the `...Get` (getter), where `MDRPropertyType` may be optional (if readonly):
+- Takes `[Type]* data, uint32_t* inout_count`
+- If `data` is `nullptr`, `inout_count` **MUST** be valid, and the length of data (in element count for `[Type]`), is set to that pointer.
+- Otherwise, `inout_count` **MUST** be set to a valid value, that **MUST** match the value retrieved via the said combination.
+
+With the `...Set` (setter):
+- Takes `const [Type]* data, uint32_t count`
+- Exactly `count * sizeof([Type])` of bytes is read from the `data` pointer
+
+### Non-blocking IO (`MDRConnection`)
+
+**None of the `MDRConnection` functions should block.** Bluetooth backends may be implemented in `libmdr-bt`, the `client`, or downstream consumers by providing their own `MDRConnection` VTable, which `libmdr` uses to communicate with the device.
+
+`libmdr` is in essence a state machine that **only** advances when manually polled, through `mdrHeadphonesPoll`, which depends on the `MDRConnection`, therefore implying non-blocking (polling) IO.
+
+
+### Logging (libmdr, libmdr-bt, client)
+
+Logging can be enabled via the CMake option `MDR_ENABLE_LOG` and is by default `OFF` in non-Debug builds. 
+
+`libmdr`, `libmdr-bt`, and `client` all use the `MDR_LOG` macro for logging, which is a wrapper around `mdr::Format` that prints to `stderr` with `fmt::format`. 
+
+Example:
+
+```cpp
+MDR_LOG("Device disconnected")
+MDR_LOG("BluetoothFindFirstDevice FAILED on radio #{} error={}", radioIndex, err)
+```
+
+For the log strings themselves:
+- **DO NOT** include tags (e.g. `MDR_LOG("[BT] Device disconnected")`), or `MDR_SOURCE_LOCATION` in your log string. The strings themselves *should* be self-explanatory and trivially searchable to cross-reference with source.
+- For strings that are only meant for a debug build, use `MDR_LOG_DEBUG`, which is automatically stripped in non-Debug builds even if `MDR_ENABLE_LOG` is `ON`.
+- There are no log levels, and platform backends that output to a system with levels should opt for the `INFO` level (e.g. logcat).
+
+### Thread Safety
+
+There are no thread-safety guarantees. Don't race the states, and check with TSAN if you're working with threads.
+
+### Commit Messages
+
+> **NOTE**: This applies to commits made after `2026/10/17`, so if you can see it, this applies to **you** *now*.
+
+**Write them yourself, and in English.** Per [CONTRIBUTING.md](./.github/CONTRIBUTING.md), **you**, the contributor, **must understand the code you contribute**. **NEVER** let an AI generate the commit messages for you, or use placeholders that convey no meaning at all.
+
+Otherwise, have **fun** with it. There's not really an objective standard for how *good* a commit message is (it's FOSS, not your day job), as long as it's *yours* and meaningful, go ahead and do it.
+
+Thanks for reading it all the way to this paragraph. We certainly hope you can *personally* enjoy the contribution process as much as the rest of us!
 
 ## Payload Struct Implementation Details (libmdr)
 
 **NOTE:** This section is for informative purposes only, as `libmdr` now generates the struct details via [codegen](./tooling/) deterministically, and the structs themselves are generated from IR via [tooling/ida](./tooling/ida/).
 
-To regenerate after modifying a source header, run `cmake --build <build-dir> --target codegen`. See [Running codegen](./tooling/README.md#running-codegen).
+To regenerate after modifying a source header, configure with `-DMDR_BUILD_CODEGEN=ON` and run `cmake --build <build-dir> --target mdr_codegen`. See [Running codegen](./tooling/README.md#running-codegen).
 
 ---
 
@@ -128,6 +384,7 @@ These are payload structs that can be trivially serialized and deserialized in m
 - No dynamic array types (vectors or strings)
 - In-memory representation is the same as packet representation (no padding, no endianness issues)
 - Enums can be cast in well-defined ways into integers
+- **These are always packed** (1-byte alignment, enforced by a `static_assert`)
 
 #### Implementation Details
 
@@ -158,6 +415,8 @@ struct ConnectRetProtocolInfo
 ### Non-Trivially Serializable Payloads
 
 These are payload structs that cannot be trivially serialized and deserialized, usually because they contain dynamic array types (vectors or strings).
+
+**NEVER** pack these structs. See [This Commit](https://github.com/mos9527/SonyHeadphonesClient/commit/3b0a9942728847503ed53e3cc14f001e2f071ece) for why.
 
 ```c++
 struct ConnectRetSupportFunction
@@ -238,7 +497,7 @@ MDRResult<ConnectRetSupportFunction> ConnectRetSupportFunction::Deserialize(cons
   - Enum fields are automatically checked with `is_valid(...)`; nested structs are inlined and checked recursively.
   - `CODEGEN` comments hint the codegen tool to generate additional validation code for the fields.
   - For details, see the next section.
-- Failed checks (`MDR_VALIDATE`) return `MDR_RESULT_ERROR_MALFORMED_PAYLOAD`, and trap the debugger the same way `MDR_TRY` does. Define `MDR_VALIDATION_NO_DEBUG_TRAPS` to disable traps for validation failures only.
+- Failed checks (`MDR_VALIDATE`) return `MDR_RESULT_ERROR_MALFORMED_PAYLOAD`, and trap into the debugger the same way `MDR_TRY` does. Define `MDR_VALIDATION_NO_DEBUG_TRAPS` to disable traps for validation failures only.
 
 For example, the `ConnectRetProtocolInfo` struct above generates:
 ```c++

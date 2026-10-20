@@ -8,6 +8,14 @@
 
 typedef struct MDRHeadphones MDRHeadphones;
 
+/* Reads cached values without device I/O. Before a report, fields retain their defaults.
+ * CURRENT is the latest device-reported value; ACKs do not update ordinary properties.
+ * DESIRED preserves local edits until completion, then follows subsequent device reports.
+ * Read-only fields do not switch views. One-shot action fields may reset on completion. */
+typedef uint32_t MDRPropertyType;
+#define MDR_PROPERTY_CURRENT ((MDRPropertyType)0u)
+#define MDR_PROPERTY_DESIRED ((MDRPropertyType)1u)
+
 typedef uint32_t MDRProtocolVersion;
 #define MDR_PROTOCOL_V1 ((MDRProtocolVersion)1u)
 #define MDR_PROTOCOL_V2 ((MDRProtocolVersion)2u)
@@ -25,6 +33,41 @@ typedef uint32_t MDRTimeoutType;
 #define MDR_TIMEOUT_DEFAULT ((MDRTimeoutType)0u) // In milliseconds
 #define MDR_TIMEOUT_ACK ((MDRTimeoutType)1u) // In milliseconds
 #define MDR_TIMEOUT_ACK_RETRIES ((MDRTimeoutType)2u) // No. of retries to perform before dropping the connection
+
+typedef uint32_t MDRHeadphonesInitFlags;
+#define MDR_HEADPHONES_INIT_NONE ((MDRHeadphonesInitFlags)0u)
+#define MDR_HEADPHONES_INIT_IDENTITY ((MDRHeadphonesInitFlags)(1u << 0u))
+#define MDR_HEADPHONES_INIT_SUPPORT_FUNCTIONS ((MDRHeadphonesInitFlags)(1u << 1u))
+#define MDR_HEADPHONES_INIT_GENERAL_SETTINGS ((MDRHeadphonesInitFlags)(1u << 2u))
+#define MDR_HEADPHONES_INIT_EQUALIZER ((MDRHeadphonesInitFlags)(1u << 3u))
+#define MDR_HEADPHONES_INIT_DSEE ((MDRHeadphonesInitFlags)(1u << 4u))
+#define MDR_HEADPHONES_INIT_PLAYBACK ((MDRHeadphonesInitFlags)(1u << 5u))
+#define MDR_HEADPHONES_INIT_NOISE_CONTROL ((MDRHeadphonesInitFlags)(1u << 6u))
+#define MDR_HEADPHONES_INIT_ASSIGNABLE_CONTROLS ((MDRHeadphonesInitFlags)(1u << 7u))
+#define MDR_HEADPHONES_INIT_PERIPHERALS ((MDRHeadphonesInitFlags)(1u << 8u))
+#define MDR_HEADPHONES_INIT_SPEAK_TO_CHAT ((MDRHeadphonesInitFlags)(1u << 9u))
+#define MDR_HEADPHONES_INIT_LISTENING_MODE ((MDRHeadphonesInitFlags)(1u << 10u))
+#define MDR_HEADPHONES_INIT_POWER ((MDRHeadphonesInitFlags)(1u << 11u))
+#define MDR_HEADPHONES_INIT_WEARING_STATUS ((MDRHeadphonesInitFlags)(1u << 12u))
+#define MDR_HEADPHONES_INIT_VOICE_GUIDANCE ((MDRHeadphonesInitFlags)(1u << 13u))
+#define MDR_HEADPHONES_INIT_CONNECTION ((MDRHeadphonesInitFlags)(1u << 14u))
+#define MDR_HEADPHONES_INIT_BATTERY ((MDRHeadphonesInitFlags)(1u << 15u))
+#define MDR_HEADPHONES_INIT_FIRMWARE_UPDATE ((MDRHeadphonesInitFlags)(1u << 16u))
+#define MDR_HEADPHONES_INIT_ALERT ((MDRHeadphonesInitFlags)(1u << 17u))
+#define MDR_HEADPHONES_INIT_LOG ((MDRHeadphonesInitFlags)(1u << 18u))
+// Init for device identification (e.g. device model, supported features, etc.)
+#define MDR_HEADPHONES_INIT_DISCOVERY ((MDRHeadphonesInitFlags)(MDR_HEADPHONES_INIT_IDENTITY | MDR_HEADPHONES_INIT_SUPPORT_FUNCTIONS))
+// Full init across all features that a device may support
+#define MDR_HEADPHONES_INIT_DEFAULT ((MDRHeadphonesInitFlags)((MDR_HEADPHONES_INIT_LOG << 1u) - 1u))
+
+typedef uint32_t MDRHeadphonesSyncFlags;
+#define MDR_HEADPHONES_SYNC_NONE ((MDRHeadphonesSyncFlags)0u)
+#define MDR_HEADPHONES_SYNC_BATTERY ((MDRHeadphonesSyncFlags)(1u << 0u))
+#define MDR_HEADPHONES_SYNC_SAFE_LISTENING ((MDRHeadphonesSyncFlags)(1u << 1u))
+#define MDR_HEADPHONES_SYNC_PLAYBACK ((MDRHeadphonesSyncFlags)(1u << 2u))
+#define MDR_HEADPHONES_SYNC_WEARING_STATUS ((MDRHeadphonesSyncFlags)(1u << 3u))
+// Sync across all states that a device may support
+#define MDR_HEADPHONES_SYNC_DEFAULT ((MDRHeadphonesSyncFlags)((MDR_HEADPHONES_SYNC_WEARING_STATUS << 1u) - 1u))
 
 typedef uint32_t MDRFeature;
 #define MDR_FEATURE_IDENTITY ((MDRFeature)1u)
@@ -89,7 +132,7 @@ typedef uint32_t MDREvent;
 #define MDR_EVENT_DEVICE_MESSAGE ((MDREvent)21u)
 /**
  * The device reported that state changed without including its new value. Once
- * @ref mdrHeadphonesIsReady returns true, call @ref mdrHeadphonesRequestSync
+ * @ref mdrHeadphonesIsReady returns true, call @ref mdrHeadphonesRequestSync with @ref mdrHeadphonesGetSync
  * 
  * @ref MDR_EVENT_SYNC_COMPLETE is emitted from @ref mdrHeadphonesPoll after the sync is complete.
  */
@@ -167,6 +210,8 @@ typedef uint32_t MDRNoiseMode;
 #define MDR_NOISE_MODE_CANCELLING ((MDRNoiseMode)1u)
 #define MDR_NOISE_MODE_V1_ON ((MDRNoiseMode)1u)
 #define MDR_NOISE_MODE_AMBIENT ((MDRNoiseMode)2u)
+/* V1 ambient_level: noise cancelling (-1 internally); otherwise 0..20. V2 accepts only 0..20. */
+#define MDR_NOISE_AMBIENT_LEVEL_V1_NOISE_CANCELLING ((uint32_t)255u)
 
 typedef uint32_t MDRAdaptiveSensitivity;
 #define MDR_ADAPTIVE_SENSITIVITY_UNKNOWN ((MDRAdaptiveSensitivity)0u)
@@ -314,22 +359,22 @@ typedef struct MDRModel
 {
     uint32_t protocol_version;
     MDRAudioCodec audio_codec;
-    uint8_t model_color;
+    uint32_t model_color;
 } MDRModel;
 
 typedef struct MDRBattery
 {
     MDRBatteryPart part;
     MDRBoolean present;
-    uint8_t level_percent;
-    uint8_t update_threshold_percent;
+    uint32_t level_percent;
+    uint32_t update_threshold_percent;
     MDRChargingState charging;
 } MDRBattery;
 
 typedef struct MDRPlayback
 {
     MDRPlaybackStatus status;
-    uint8_t volume;
+    uint32_t volume;
 } MDRPlayback;
 
 typedef struct MDRPlaybackCommand
@@ -340,7 +385,7 @@ typedef struct MDRPlaybackCommand
 typedef struct MDRNoiseControl
 {
     MDRNoiseMode mode;
-    uint8_t ambient_level;
+    uint32_t ambient_level;
     MDRBoolean changing_asm_level;
     MDRBoolean focus_on_voice;
     MDRNoiseButtonMode button_mode;
@@ -364,7 +409,7 @@ typedef struct MDRListening
 typedef struct MDREqualizer
 {
     MDREqualizerPreset preset;
-    int8_t clear_bass;
+    int32_t clear_bass; /* -10..10 */
     uint32_t band_count;
     MDRBoolean dsee_enabled;
     MDRDSEEType dsee_type;
@@ -439,7 +484,7 @@ typedef struct MDRPower
 typedef struct MDRVoiceGuidance
 {
     MDRBoolean enabled;
-    int8_t volume;
+    int32_t volume; /* -2..2 where volume control is supported. */
 } MDRVoiceGuidance;
 
 typedef struct MDRConnectionMode
@@ -449,7 +494,7 @@ typedef struct MDRConnectionMode
 
 typedef struct MDRSafeListening
 {
-    uint8_t sound_pressure;
+    uint32_t sound_pressure;
     MDRBoolean preview;
 } MDRSafeListening;
 
@@ -486,40 +531,60 @@ MDR_API MDRResult mdrHeadphonesCreate(uint32_t abiVersion, MDRConnection* connec
                                       MDRProtocolVersion protocolVersion, MDRHeadphones** ppHeadphones);
 /**
  * @brief Frees the @ref MDRHeadphones instance.
+ * @note  When a fatal failure has occured, i.e. after an non-`MDR_RESULT_OK` result via @ref mdrHeadphonesPoll,
+ *        destroy and recreate the instance. Other operations return the last error code,
+ *        except status queries and @ref mdrHeadphonesGetText with @ref MDR_TEXT_LAST_ERROR.
  */
 MDR_API void mdrHeadphonesDestroy(MDRHeadphones* headphones);
 /**
  * @brief Returns true if the @ref MDRHeadphones instance has been initialized via @ref mdrHeadphonesRequestInit.
+ * @note  Returns false after a fatal failure, in which case destroy and recreate the instance.
  */
 MDR_API MDRBoolean mdrHeadphonesIsInitialized(const MDRHeadphones* headphones);
 /**
- * @brief Returns true if new ...Request and state-changing ...Set calls can be made.
- *        If any in-flight request is pending/incomplete, this will return false, and subsequent ...Request, ...Set,
- *        and @ref mdrHeadphonesPlayback calls will fail with @ref MDR_RESULT_INPROGRESS.
+ * @brief Returns true if new ...Request calls can be made.
+ *        If any in-flight request is pending/incomplete, this will return false, and subsequent ...Request
+ *        calls will fail with @ref MDR_RESULT_INPROGRESS.
+ * @note  After initialization, ...Set and @ref mdrHeadphonesSendPlaybackCommand may stage writes while busy.
+ * @note  Returns false after a fatal failure, in which case destroy and recreate the instance.
  */
 MDR_API MDRBoolean mdrHeadphonesIsReady(const MDRHeadphones* headphones);
 /**
- * @brief Returns true if there are pending changes made through the ...Set calls that have not yet been committed to
- *        the device via @ref mdrHeadphonesRequestCommit.
+ * @brief Returns true if writes staged through the ...Set or @ref mdrHeadphonesSendPlaybackCommand calls
+ *        are awaiting submission or completion. Explicit writes are staged even when their values are unchanged;
+ *        repeated writes before submission are coalesced. Device reports do not stage writes.
  */
 MDR_API MDRBoolean mdrHeadphonesIsDirty(const MDRHeadphones* headphones);
 /**
  * @brief Request initialization. This MUST be called prior to other operations.
  *        See also @ref mdrHeadphonesIsInitialized, @ref mdrHeadphonesIsReady, and @ref mdrHeadphonesIsDirty.
+ * @param flags Which parts of the device needs to be queried or set. Use @ref MDR_HEADPHONES_INIT_DEFAULT for 
+ *        all supported features to be initialized, or any combination of @ref MDR_HEADPHONES_INIT_... flags.
+ * @note  See also @ref mdrHeadphonesIsInitialized, @ref mdrHeadphonesIsReady, and @ref mdrHeadphonesIsDirty.
  */
-MDR_API MDRResult mdrHeadphonesRequestInit(MDRHeadphones* headphones);
+MDR_API MDRResult mdrHeadphonesRequestInit(MDRHeadphones* headphones, MDRHeadphonesInitFlags flags);
 /**
  * @brief Request pulling latest states from the device. This includes e.g. battery levels and some other states that
  * may change without being notified by the headphones themselves.
+ * @param flags Which states to pull. Use @ref MDR_HEADPHONES_SYNC_DEFAULT for all supported states,
+ *        or any combination of @ref MDR_HEADPHONES_SYNC_... flags.
  * @note  Call this after @ref MDR_EVENT_NEED_SYNC once @ref mdrHeadphonesIsReady returns true. Continue polling until
  *        @ref MDR_EVENT_SYNC_COMPLETE; this function only schedules the non-blocking synchronization task.
  */
-MDR_API MDRResult mdrHeadphonesRequestSync(MDRHeadphones* headphones);
+MDR_API MDRResult mdrHeadphonesRequestSync(MDRHeadphones* headphones, MDRHeadphonesSyncFlags flags);
 /**
- * @brief Commits any pending changes made via the ...Set calls. Changes are ONLY applied to the devices
- *        after this call is complete, and only then @ref mdrHeadphonesIsDirty will return false
- * @note  You may call this function at the end of your frame/event loop. Calling this function
- *        when @ref mdrHeadphonesIsDirty returns false is a no-op.
+ * @brief The immediate states that needs to be synced. Use with @ref mdrHeadphonesRequestSync.
+ * @param out_flags Receives the immediate states that needs to be synced.
+ */
+MDR_API MDRResult mdrHeadphonesGetSync(MDRHeadphones* headphones, MDRHeadphonesSyncFlags* out_flags);
+/**
+ * @brief Schedules pending changes made via the ...Set or @ref mdrHeadphonesSendPlaybackCommand calls.
+ *        Continue polling until @ref MDR_EVENT_APPLY_COMPLETE. Acknowledged writes no longer count as dirty,
+ *        even if the device has not yet reported their resulting values.
+ * @note  ACKs acknowledge command delivery, not the resulting property values. Use DESIRED for local edits;
+ *        ordinary CURRENT properties change only on device reports. One-shot actions may reset on completion.
+ * @note  Synchronization refreshes only its protocol-specific subset, not every writable property.
+ * @note  You may call this function at the end of your frame/event loop.
  */
 MDR_API MDRResult mdrHeadphonesRequestCommit(MDRHeadphones* headphones);
 
@@ -549,25 +614,45 @@ MDR_API MDRResult mdrHeadphonesGetText(MDRHeadphones* headphones, MDRText text, 
 /* Model, battery, and playback. */
 MDR_API MDRResult mdrHeadphonesGetModel(MDRHeadphones* headphones, MDRModel* out_identity);
 MDR_API MDRResult mdrHeadphonesGetBatteries(MDRHeadphones* headphones, MDRBattery* batteries, uint32_t* inout_count);
-MDR_API MDRResult mdrHeadphonesGetPlayback(MDRHeadphones* headphones, MDRPlayback* out_playback);
-MDR_API MDRResult mdrHeadphonesSetPlayback(MDRHeadphones* headphones, const MDRPlayback* playback);
-MDR_API MDRResult mdrHeadphonesPlayback(MDRHeadphones* headphones, const MDRPlaybackCommand* command);
+/**
+ * @brief Reads the playback status and the selected volume view.
+ */
+MDR_API MDRResult mdrHeadphonesGetPlayback(MDRHeadphones* headphones, MDRPropertyType type,
+                                           MDRPlayback* out_playback);
+/**
+ * @brief Stages a playback volume in the range 0..30 without changing playback status.
+ * @note Applied only through @ref mdrHeadphonesRequestCommit.
+ */
+MDR_API MDRResult mdrHeadphonesSetPlaybackVolume(MDRHeadphones* headphones, uint32_t volume);
+/**
+ * @brief Stages a play, pause, next-track, or previous-track command.
+ * @note Sent only through @ref mdrHeadphonesRequestCommit. Each new command replaces any uncommitted command.
+ */
+MDR_API MDRResult mdrHeadphonesSendPlaybackCommand(MDRHeadphones* headphones, const MDRPlaybackCommand* command);
 
 /* Sound controls. */
-MDR_API MDRResult mdrHeadphonesGetNoiseControl(MDRHeadphones* headphones, MDRNoiseControl* out_noise_control);
+MDR_API MDRResult mdrHeadphonesGetNoiseControl(MDRHeadphones* headphones, MDRPropertyType type,
+                                               MDRNoiseControl* out_noise_control);
 MDR_API MDRResult mdrHeadphonesSetNoiseControl(MDRHeadphones* headphones, const MDRNoiseControl* noise_control);
-MDR_API MDRResult mdrHeadphonesGetSpeakToChat(MDRHeadphones* headphones, MDRSpeakToChat* out_speak_to_chat);
+MDR_API MDRResult mdrHeadphonesGetSpeakToChat(MDRHeadphones* headphones, MDRPropertyType type,
+                                              MDRSpeakToChat* out_speak_to_chat);
 MDR_API MDRResult mdrHeadphonesSetSpeakToChat(MDRHeadphones* headphones, const MDRSpeakToChat* speak_to_chat);
-MDR_API MDRResult mdrHeadphonesGetListening(MDRHeadphones* headphones, MDRListening* out_listening);
+MDR_API MDRResult mdrHeadphonesGetListening(MDRHeadphones* headphones, MDRPropertyType type,
+                                            MDRListening* out_listening);
 MDR_API MDRResult mdrHeadphonesSetListening(MDRHeadphones* headphones, const MDRListening* listening);
-MDR_API MDRResult mdrHeadphonesGetEqualizer(MDRHeadphones* headphones, MDREqualizer* out_equalizer);
-MDR_API MDRResult mdrHeadphonesSetEqualizer(MDRHeadphones* headphones, const MDREqualizer* equalizer);
-MDR_API MDRResult mdrHeadphonesGetEqualizerBands(MDRHeadphones* headphones, int8_t* bands, uint32_t* inout_count);
-MDR_API MDRResult mdrHeadphonesSetEqualizerBands(MDRHeadphones* headphones, const int8_t* bands, uint32_t count);
+MDR_API MDRResult mdrHeadphonesGetEqualizer(MDRHeadphones* headphones, MDRPropertyType type,
+                                            MDREqualizer* out_equalizer);
+MDR_API MDRResult mdrHeadphonesSetEqualizerPreset(MDRHeadphones* headphones, MDREqualizerPreset preset);
+MDR_API MDRResult mdrHeadphonesSetEqualizerClearBass(MDRHeadphones* headphones, int32_t clear_bass);
+MDR_API MDRResult mdrHeadphonesSetDSEE(MDRHeadphones* headphones, MDRBoolean enabled);
+/* Counts are element counts, not byte sizes. Five bands accept -10..10; ten accept -6..6. */
+MDR_API MDRResult mdrHeadphonesGetEqualizerBands(MDRHeadphones* headphones, MDRPropertyType type,
+                                                 int32_t* bands, uint32_t* inout_count);
+MDR_API MDRResult mdrHeadphonesSetEqualizerBands(MDRHeadphones* headphones, const int32_t* bands, uint32_t count);
 
 /**
  * @brief The equalizer presets the device advertised, in its order. Names are @ref MDR_TEXT_EQUALIZER_PRESET_NAME.
- * @note  An empty list means the device has not reported one, and @ref mdrHeadphonesSetEqualizer then accepts any
+ * @note  An empty list means the device has not reported one, and @ref mdrHeadphonesSetEqualizerPreset then accepts any
  *        preset. Otherwise presets outside the list are refused. Unknown ids read MDR_EQ_UNKNOWN.
  */
 MDR_API MDRResult mdrHeadphonesGetEqualizerPresets(MDRHeadphones* headphones, MDREqualizerPreset* presets,
@@ -577,7 +662,8 @@ MDR_API MDRResult mdrHeadphonesGetEqualizerPresets(MDRHeadphones* headphones, MD
 MDR_API MDRResult mdrHeadphonesGetPairedDevices(MDRHeadphones* headphones, MDRPairedDevice* devices,
                                                 uint32_t* inout_count);
 MDR_API MDRResult mdrHeadphonesSetPairedDevice(MDRHeadphones* headphones, const MDRPairedDeviceAction* action);
-MDR_API MDRResult mdrHeadphonesGetPairing(MDRHeadphones* headphones, MDRPairing* out_pairing);
+MDR_API MDRResult mdrHeadphonesGetPairing(MDRHeadphones* headphones, MDRPropertyType type,
+                                          MDRPairing* out_pairing);
 MDR_API MDRResult mdrHeadphonesSetPairing(MDRHeadphones* headphones, const MDRPairing* pairing);
 
 /**
@@ -589,7 +675,8 @@ MDR_API MDRResult mdrHeadphonesSetPairing(MDRHeadphones* headphones, const MDRPa
  *
  * @note Contribution by @jkolo in https://github.com/mos9527/SonyHeadphonesClient/pull/57
  */
-MDR_API MDRResult mdrHeadphonesGetSourceSwitchControl(MDRHeadphones* headphones, MDRBoolean* out_enabled);
+MDR_API MDRResult mdrHeadphonesGetSourceSwitchControl(MDRHeadphones* headphones, MDRPropertyType type,
+                                                      MDRBoolean* out_enabled);
 MDR_API MDRResult mdrHeadphonesSetSourceSwitchControl(MDRHeadphones* headphones, MDRBoolean enabled);
 
 /**
@@ -606,21 +693,23 @@ MDR_API MDRResult mdrHeadphonesGetSourceSwitchControlResult(MDRHeadphones* headp
                                                             MDRSourceSwitchControlResult* out_result);
 
 /**
- * @brief Answers the confirmation the device asked for with @ref MDR_EVENT_ALERT (see @ref MDR_TEXT_LAST_ALERT).
+ * @brief Stages a response to the confirmation requested by @ref MDR_EVENT_ALERT (see @ref MDR_TEXT_LAST_ALERT).
+ * @note  This is a write-only property, sent only through @ref mdrHeadphonesRequestCommit. Each new response
+ *        replaces any uncommitted response and is consumed after acknowledgement.
  * @note  The setting that triggered it (e.g. multipoint, connection mode) is not applied until answered with
  *        @ref MDR_ALERT_ACTION_POSITIVE, which may disconnect the device.
  * @return @ref MDR_RESULT_ERROR_NOT_FOUND if the device has not asked anything.
  */
-MDR_API MDRResult mdrHeadphonesRequestRespondToAlert(MDRHeadphones* headphones, MDRAlertAction action);
+MDR_API MDRResult mdrHeadphonesSetAlertResponse(MDRHeadphones* headphones, MDRAlertAction action);
 
 /* General settings and assignable controls. */
 MDR_API MDRResult mdrHeadphonesGetGeneralSettingInfo(MDRHeadphones* headphones, MDRGeneralSettingInfo* settings,
                                                      uint32_t* inout_count);
-MDR_API MDRResult mdrHeadphonesGetGeneralSetting(MDRHeadphones* headphones, uint32_t index,
-                                                 MDRGeneralSetting* out_setting);
+MDR_API MDRResult mdrHeadphonesGetGeneralSetting(MDRHeadphones* headphones, MDRPropertyType type,
+                                                 uint32_t index, MDRGeneralSetting* out_setting);
 MDR_API MDRResult mdrHeadphonesSetGeneralSetting(MDRHeadphones* headphones, const MDRGeneralSetting* setting);
-MDR_API MDRResult mdrHeadphonesGetAssignableControls(MDRHeadphones* headphones, MDRAssignableControl* out_controls,
-                                                     uint32_t* inout_count);
+MDR_API MDRResult mdrHeadphonesGetAssignableControls(MDRHeadphones* headphones, MDRPropertyType type,
+                                                     MDRAssignableControl* out_controls, uint32_t* inout_count);
 MDR_API MDRResult mdrHeadphonesGetAssignableControlActions(MDRHeadphones* headphones,
                                                            MDRAssignableActionKeyLocation key,
                                                            MDRAssignableAction* out_options, uint32_t* inout_count);
@@ -628,13 +717,16 @@ MDR_API MDRResult mdrHeadphonesSetAssignableControls(MDRHeadphones* headphones, 
                                                      uint32_t count);
 
 /* Power, wearing behavior, voice guidance, and related system settings. */
-MDR_API MDRResult mdrHeadphonesGetPower(MDRHeadphones* headphones, MDRPower* out_power);
+MDR_API MDRResult mdrHeadphonesGetPower(MDRHeadphones* headphones, MDRPropertyType type, MDRPower* out_power);
 MDR_API MDRResult mdrHeadphonesSetPower(MDRHeadphones* headphones, const MDRPower* power);
-MDR_API MDRResult mdrHeadphonesGetVoiceGuidance(MDRHeadphones* headphones, MDRVoiceGuidance* out_voice_guidance);
+MDR_API MDRResult mdrHeadphonesGetVoiceGuidance(MDRHeadphones* headphones, MDRPropertyType type,
+                                                MDRVoiceGuidance* out_voice_guidance);
 MDR_API MDRResult mdrHeadphonesSetVoiceGuidance(MDRHeadphones* headphones, const MDRVoiceGuidance* voice_guidance);
-MDR_API MDRResult mdrHeadphonesGetConnectionMode(MDRHeadphones* headphones, MDRConnectionMode* out_mode);
+MDR_API MDRResult mdrHeadphonesGetConnectionMode(MDRHeadphones* headphones, MDRPropertyType type,
+                                                 MDRConnectionMode* out_mode);
 MDR_API MDRResult mdrHeadphonesSetConnectionMode(MDRHeadphones* headphones, const MDRConnectionMode* mode);
-MDR_API MDRResult mdrHeadphonesGetSafeListening(MDRHeadphones* headphones, MDRSafeListening* out_safe_listening);
+MDR_API MDRResult mdrHeadphonesGetSafeListening(MDRHeadphones* headphones, MDRPropertyType type,
+                                                MDRSafeListening* out_safe_listening);
 MDR_API MDRResult mdrHeadphonesSetSafeListening(MDRHeadphones* headphones, const MDRSafeListening* safe_listening);
 /**
  * @brief Whether the headphones are currently on the head, from the proximity sensor.

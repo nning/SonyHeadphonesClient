@@ -1,8 +1,50 @@
 #pragma once
 #include <cstddef>
+#include <cstdint>
 #include <mdr-c/Connection.h>
 
 #include "../I18N/Strings.hpp"
+
+struct SDL_Window;
+struct SDL_Renderer;
+
+extern AppLocale clientGetAppLocale();
+extern void clientSetAppLocale(AppLocale locale);
+extern bool clientInit(float displayScale, const char* fontPath = nullptr);
+/**
+ * The worker thread run this. This will be the sole callsite for @ref mdrHeadphonesPoll()
+ * @return true if the @ref MDRHeadphones state has changed.
+ */
+extern bool clientOnUpdate();
+/**
+ * Main thread, and everything UI.
+ * @return true if the UI wants to be redrawn.
+ */
+extern bool clientOnFrame(SDL_Window* window);
+extern void clientDestroy();
+extern void clientSetPauseMediaOnRemove(bool enabled);
+extern float clientPlatformGetDisplayScale();
+extern const char* clientPlatformGetProcessorArchitecture();
+/**
+ * Platform specific SDL_Renderer setup
+ * - Called (renderer=nullptr) before graphics init
+ * - Called (renderer!=nullptr) after graphics init
+
+ * @return true if the platform-specific graphics setup succeeded.
+ 
+ * Currently:
+ * - Apple platforms: This requests double-buffering instead of triple-buffering
+ * - GL platforms (Web/Android/OHOS/Linux): This disables useless depth FBO allocation
+ */
+extern bool clientPlatformInitGraphics(SDL_Renderer* renderer);
+/**
+ * @brief Initialize platform resources before command-line parsing and SDL video initialization.
+ */
+extern bool clientPlatformInit();
+extern bool clientPlatformWaitEventTimeout(int timeoutMS);
+#ifdef MDR_CLIENT_DEBUGGER
+extern void clientEnterDebuggerReplayMode();
+#endif
 
 extern "C" {
     /**
@@ -64,17 +106,55 @@ extern "C" {
      * @note This is only implemented for the Linux platform. See https://github.com/mos9527/SonyHeadphonesClient/pull/63
      */
     extern void clientPlatformMediaResume(struct ClientMediaPause* pause);
-#ifdef __EMSCRIPTEN__
+    enum ClientPlatformSaveBlobResult
+    {
+        CLIENT_PLATFORM_SAVE_BLOB_SAVED,
+        CLIENT_PLATFORM_SAVE_BLOB_DISPATCHED,
+        CLIENT_PLATFORM_SAVE_BLOB_CANCELLED,
+        CLIENT_PLATFORM_SAVE_BLOB_FAILED,
+        CLIENT_PLATFORM_SAVE_BLOB_FALLBACK_SAVED
+    };
     /**
-     * @brief Download bytes through the browser. Emscripten only.
-     * @return Non-zero when the browser download was started.
+     * @brief Completion callback for saving bytes.
+     * @param path Saved path, or suggested filename for a dispatched download/share.
+     * @param error Error details on failure, or dialog error on fallback success; otherwise NULL.
+     * @note Strings are valid only during the callback. It may run on a different thread.
+     *       DISPATCHED only means the OS/browser accepted the handoff, not that the file was saved.
      */
-    extern int clientPlatformDownloadFile(
+    typedef void (*ClientPlatformSaveBlobCallback)(
+        void* userdata, ClientPlatformSaveBlobResult result, const char* path, const char* error);
+    /**
+     * @brief Export bytes through the platform's save dialog, share panel, or browser download.
+     * @param filename UTF-8 suggested filename, including its extension; no directory separators.
+     * @param data Non-empty input bytes.
+     * @param dataSize Input size in bytes.
+     * @param mimeType File MIME type.
+     * @param window Required parent window.
+     * @param callback Called exactly once if the request is accepted; may run synchronously or on another thread.
+     * @param userdata Callback context; must survive until completion.
+     * @return MDR_RESULT_OK if accepted, otherwise an error code with no callback.
+     * @note Call on the SDL main thread. Input strings and bytes are copied/consumed before return.
+     */
+    extern int clientPlatformSaveBlob(
         const char* filename,
         const unsigned char* data,
         size_t dataSize,
-        const char* mimeType);
-#endif
+        const char* mimeType,
+        SDL_Window* window,
+        ClientPlatformSaveBlobCallback callback,
+        void* userdata);
+    /**
+     * @brief Shared SDL implementation in SDLMain.cpp; desktop platform entry points delegate here.
+     * @note Defined only when the client is compiled with SDL_DIALOG.
+     */
+    extern int clientSDLSaveBlob(
+        const char* filename,
+        const unsigned char* data,
+        size_t dataSize,
+        const char* mimeType,
+        SDL_Window* window,
+        ClientPlatformSaveBlobCallback callback,
+        void* userdata);
     /**
      * @brief Master clean up function.
      * This will destroy all connections, and ensures the client is quit without leaking resources.
