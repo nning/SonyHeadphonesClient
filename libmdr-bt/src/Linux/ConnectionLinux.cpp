@@ -180,6 +180,18 @@ struct MDRConnectionLinux
     static MDRResult GetDevicesList(void* user, MDRDeviceInfo** ppList, int* pCount) noexcept
     {
         auto* ptr = static_cast<MDRConnectionLinux*>(user);
+        *ppList = nullptr;
+        *pCount = 0;
+        // The system bus may have been unavailable at construction (e.g. no
+        // D-Bus in a container, bluetoothd not started yet); libdbus aborts
+        // the process when handed a NULL connection, so retry or bail.
+        if (!ptr->dbusConn)
+            ptr->dbusConn = dbus_open_system_bus();
+        if (!ptr->dbusConn)
+        {
+            ptr->lastError = "Could not connect to the D-Bus system bus";
+            return MDR_RESULT_ERROR_NO_CONNECTION;
+        }
         auto paths = dbus_list_adapters(ptr->dbusConn);
         *ppList = mdr::MDRAllocator<MDRDeviceInfo>().allocate(paths.size());
         *pCount = static_cast<int>(paths.size());
